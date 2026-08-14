@@ -1,0 +1,41 @@
+[package]
+name = "governance-spine"
+version = "1.0.0"
+edition = "2021"
+authors = ["LOGOS Governance Systems Inc."]
+description = "Sentinel OverWatch Governance Spine - Production Ready"
+
+[lib]
+name = "governance_spine"
+path = "src/lib.rs"
+
+[[bin]]
+name = "governance_spine_demo"
+path = "src/main.rs"
+
+[dependencies]
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+uuid = { version = "1.0", features = ["serde", "v4"] }
+chrono = { version = "0.4", features = ["serde"] }
+ed25519-dalek = { version = "2.1", features = ["rand_core"] }
+sha2 = "0.10"
+hex = "0.4"
+base64 = "0.21"
+regex = "1.10"
+parking_lot = "0.12"
+once_cell = "1.19"
+rand = "0.8"
+thiserror = "1.0"
+anyhow = "1.0"
+log = "0.4"
+env_logger = "0.11"
+secrecy = "0.8"
+subtle = "2.6"
+
+[dev-dependencies]
+tokio = { version = "1.0", features = ["full"] }
+
+[[bin]]
+name = "governance_spine_server"
+path = "src/server.rs"

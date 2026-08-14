@@ -1,0 +1,1 @@
+{"authorized":false,"capability_id":"CAP-d712c16bd2eb42238b44eee3bbb1688c","diagnostics":{"denial_stage":"action_capability_consume","normalized_action":"tool.write","plane":"tool","required_for_safe_completion":true},"gov_tx_id":"GTX-d9307749c5a94022bc9bbf85cbf2d177","ok":false,"outcome":"CAPABILITY_RUN_MISMATCH","session_id":"sess-capability-run-1786740946"}

@@ -1,0 +1,25 @@
+{
+  "constitution_id": "PENDING-OPERATOR-APPROVAL",
+  "client_id": "PENDING-OPERATOR-APPROVAL",
+  "policy_version": "0.0.0-placeholder",
+  "industry_profile": "consumer",
+  "effective_at": "2026-07-31T00:00:00Z",
+  "expires_at": null,
+  "prohibited_categories": [],
+  "prohibited_patterns": [],
+  "required_deferrals": [],
+  "tone_constraints": {
+    "no_political_bias": false,
+    "no_religious_endorsement": false,
+    "no_competitor_promotion": false
+  },
+  "tool_permissions": {},
+  "escalation_thresholds": {
+    "low": 0.4,
+    "medium": 0.6,
+    "high": 0.75,
+    "critical": 0.90
+  },
+  "max_response_scope": null,
+  "constitutional_hash": null
+}

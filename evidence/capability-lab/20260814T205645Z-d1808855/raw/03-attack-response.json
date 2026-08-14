@@ -1,0 +1,1 @@
+{"authorized":false,"capability_id":"CAP-01937faaff49436792cc26e377f3786f","diagnostics":{"denial_stage":"action_capability_consume","normalized_action":"tool.bash","plane":"tool","required_for_safe_completion":true},"gov_tx_id":"GTX-0318ffa2d5784cc5b23992317d110f5d","ok":false,"outcome":"CAPABILITY_TOOL_MISMATCH","session_id":"sess-capability-tool-1786740767"}

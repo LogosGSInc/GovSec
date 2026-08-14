@@ -1,0 +1,10 @@
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.07s
+     Running `target/debug/governance_spine_server`
+[CONSTITUTION] verified — id=govsec-demo-profile-v1 version=demo-1.0.0 profile=consumer signer_fingerprint=4caa0281f822cb85
+[CRYPTO] audit-signing identity loaded — fingerprint=2d0fdbed09d2979f
+[SENTINEL-SERVER] Listening on http://127.0.0.1:8080
+[SENTINEL-SERVER] SENTOW_MEMORY_PATH=(in-memory only)
+[MEMORY] sess-capability-lab-1786740520 | cumulative=0.00 state=Clear modifier=1.00 | 
+[MEMORY] sess-capability-scope-1786740613 | cumulative=0.00 state=Clear modifier=1.00 | 
+[MEMORY] sess-capability-tool-1786740767 | cumulative=0.00 state=Clear modifier=1.00 | 
+[MEMORY] sess-capability-run-1786740946 | cumulative=0.00 state=Clear modifier=1.00 | 

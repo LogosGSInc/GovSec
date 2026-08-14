@@ -1,0 +1,12 @@
+{
+  "capability_id": "CAP-aa144b0935014039bce2a743190c3a53",
+  "gov_tx_id": "GTX-307a508fa54641179781a4109d231449",
+  "session_id": "sess-capability-scope-1786740613",
+  "run_id": "run-capability-scope-1786740613",
+  "context_hash": "4720110e9e59498febcf469ebf47af4346a927eaa47b31b4c82684df22b769de",
+  "action_hash": "591dc94c98ae25b4f80b7bfec74fae80bc7211e10a346cf887cd838ef5f4518a",
+  "tool_name": "write",
+  "resource_kind": "record",
+  "resource_locator": "customer/*",
+  "tool_call_id": "call-capability-scope-01"
+}

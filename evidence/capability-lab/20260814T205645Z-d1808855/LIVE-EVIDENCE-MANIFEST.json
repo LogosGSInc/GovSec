@@ -1,0 +1,136 @@
+{
+  "schema_version": "logos.govsec.live-evidence.v1",
+  "mode": "LIVE",
+  "freeze_id": "20260814T205645Z-d1808855",
+  "generated_at": "2026-08-14T21:05:05.568521+00:00",
+  "source": {
+    "repository": "https://github.com/LogosGSInc/GovSec.git",
+    "branch": "agent/publish-canonical-govsec",
+    "commit": "d1808855f7488e1ff26aedb53683252eadb0e77f"
+  },
+  "runtime": {
+    "binary": "governance_spine_server",
+    "industry_profile": "consumer",
+    "govmem_mode": "v1",
+    "constitution": {
+      "constitution_id": "govsec-demo-profile-v1",
+      "policy_version": "demo-1.0.0",
+      "sha256": "54523b87783beed970dc19d01305b1fed2797f55fb00b0b92b82e65d800b262b",
+      "signature_sha256": "61d2baf3651b96b0af097e1339ad9d53b8e6f8d8510370dab1ea8c26df8469fc",
+      "signer_fingerprint": "4caa0281f822cb85"
+    },
+    "audit_signer_fingerprint": "2d0fdbed09d2979f"
+  },
+  "evidence_boundary": {
+    "resources_are_synthetic": true,
+    "external_side_effects_performed": false,
+    "browser_decides_authorization": false,
+    "adapter_decides_authorization": false,
+    "runtime_decides_authorization": true,
+    "credentials_included": false
+  },
+  "claims": [
+    {
+      "id": "LIVE-01",
+      "claim": "exact_authorized_execution",
+      "status": "VERIFIED_LIVE",
+      "issued": {
+        "tool": "write",
+        "resource_kind": "record",
+        "resource_locator": "customer/3817",
+        "run_id": "run-capability-lab-1786740520",
+        "context_hash": "7dd0f5e9f61f3ea9cc5ce5efec059365f1e5f665ee48e601c41a24c5a99654fc",
+        "action_hash": "9f7d667ac8f031a4b8ec6b96c9232bbec01a00d2120214acf735957109b20471",
+        "max_uses": 1,
+        "plane": "tool",
+        "normalized_action": "tool.write",
+        "policy_version": "demo-1.0.0"
+      },
+      "authorized": true,
+      "outcome": "CAPABILITY_CONSUMED",
+      "artifacts": [
+        "raw/01-context-response.json",
+        "raw/01-authorize-response.json",
+        "raw/01-consume-response.json"
+      ]
+    },
+    {
+      "id": "LIVE-02",
+      "claim": "capability_replay_rejected",
+      "status": "VERIFIED_LIVE",
+      "capability_id": "CAP-40a6ef4b1cda4c6b97df44fb349f8e95",
+      "max_uses": 1,
+      "authorized": false,
+      "outcome": "CAPABILITY_REPLAY_REJECTED",
+      "artifacts": [
+        "raw/01-authorize-response.json",
+        "raw/01-consume-response.json",
+        "raw/01-replay-response.json"
+      ]
+    },
+    {
+      "id": "LIVE-03",
+      "claim": "resource_substitution_rejected",
+      "status": "VERIFIED_LIVE",
+      "issued": {
+        "tool": "write",
+        "resource": "customer/3817",
+        "action_hash": "591dc94c98ae25b4f80b7bfec74fae80bc7211e10a346cf887cd838ef5f4518a"
+      },
+      "attempted": {
+        "tool": "write",
+        "resource": "customer/*"
+      },
+      "authorized": false,
+      "outcome": "CAPABILITY_RESOURCE_MISMATCH",
+      "artifacts": [
+        "raw/02-authorize-response.json",
+        "raw/02-attack-request.json",
+        "raw/02-attack-response.json"
+      ]
+    },
+    {
+      "id": "LIVE-04",
+      "claim": "tool_substitution_rejected",
+      "status": "VERIFIED_LIVE",
+      "issued": {
+        "tool": "write",
+        "resource": "customer/3817",
+        "action_hash": "5c48f11e96ae062e135ee62310e971ec63dec01fa0239b13a09fc320601b0b0d"
+      },
+      "attempted": {
+        "tool": "bash",
+        "resource": "customer/3817"
+      },
+      "authorized": false,
+      "outcome": "CAPABILITY_TOOL_MISMATCH",
+      "artifacts": [
+        "raw/03-authorize-response.json",
+        "raw/03-attack-request.json",
+        "raw/03-attack-response.json"
+      ]
+    },
+    {
+      "id": "LIVE-05",
+      "claim": "run_substitution_rejected",
+      "status": "VERIFIED_LIVE",
+      "issued": {
+        "run_id": "run-capability-run-1786740946",
+        "tool": "write",
+        "resource": "customer/3817",
+        "context_hash": "2371be565e1568c87ee7062fa00d6c56a62e88ef9ba6bf2e559959d2fd193f83",
+        "action_hash": "760b1f65f3be3f6a89ea415ff3e37fca277876aa585a8cf815c3530dbc5776dd"
+      },
+      "attempted": {
+        "run_id": "run-capability-ATTACKER-1786740946"
+      },
+      "authorized": false,
+      "outcome": "CAPABILITY_RUN_MISMATCH",
+      "artifacts": [
+        "raw/04-authorize-response.json",
+        "raw/04-attack-request.json",
+        "raw/04-attack-response.json"
+      ]
+    }
+  ]
+}
