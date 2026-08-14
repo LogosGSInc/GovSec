@@ -1,0 +1,32 @@
+# Rust
+target/
+**/target/
+*.profraw
+
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+venv/
+build/
+**/build/
+*.egg-info/
+
+# Editors and operating systems
+.idea/
+.vscode/
+.DS_Store
+*~
+
+# Local secrets and runtime state
+.env
+.env.*
+!.env.example
+*.key
+*.pem
+*.p12
+*.pfx
+audit.jsonl
+*.sqlite
+*.sqlite3

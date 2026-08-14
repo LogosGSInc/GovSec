@@ -1,0 +1,225 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Store 1 Delta Candidate",
+  "description": "Schema for GovMem Store 1 delta candidate records. Candidates are review-only proposals for human/operator evaluation. store1_write_applied must always be false at generation time. Deltas are never applied automatically — a separate operator-approved patch tool is required.",
+  "type": "object",
+  "required": [
+    "artifact_type",
+    "schema_version",
+    "store_target",
+    "store1_write_applied",
+    "candidate_only",
+    "target_agent_id",
+    "target_agent_role",
+    "agent_scope",
+    "shared_with_peer_agents",
+    "shared_with_abigail",
+    "abigail_training_eligible",
+    "abigail_training_requires_approval",
+    "source_store",
+    "source_run_id",
+    "source_taxonomy",
+    "source_record_id",
+    "sentinel_source",
+    "generation",
+    "vector_id",
+    "level",
+    "memory_action_observed",
+    "sentinel_action_observed",
+    "haap_requirement_observed",
+    "finding_type",
+    "recommended_store1_action",
+    "recommended_memory_action",
+    "recommended_sentinel_action",
+    "recommended_haap_requirement",
+    "rule_delta",
+    "audit_reason",
+    "operator_approval_required",
+    "approved_by_operator",
+    "promotion_status",
+    "safety_status",
+    "created_at",
+    "source_file"
+  ],
+  "properties": {
+    "artifact_type": {
+      "type": "string",
+      "const": "store1_delta_candidate",
+      "description": "Always 'store1_delta_candidate'. Identifies this as a candidate record, not an applied delta."
+    },
+    "schema_version": {
+      "type": "string",
+      "const": "3.0",
+      "description": "Schema version for this candidate format."
+    },
+    "store_target": {
+      "type": "string",
+      "const": "store_1",
+      "description": "Target store. Always 'store_1'."
+    },
+    "store1_write_applied": {
+      "type": "boolean",
+      "const": false,
+      "description": "Must always be false at generation time. Store 1 writes require a separate operator-approved patch tool."
+    },
+    "candidate_only": {
+      "type": "boolean",
+      "const": true,
+      "description": "Must always be true. Candidates are never applied automatically."
+    },
+    "target_agent_id": {
+      "type": "string",
+      "minLength": 1,
+      "description": "ID of the agent this delta candidate is scoped to."
+    },
+    "target_agent_role": {
+      "type": "string",
+      "description": "Role of the target agent, or 'unknown'."
+    },
+    "agent_scope": {
+      "type": "string",
+      "const": "agent_local",
+      "description": "Always 'agent_local'. Agents cannot overwrite each other's Store 1."
+    },
+    "shared_with_peer_agents": {
+      "type": "boolean",
+      "const": false,
+      "description": "Must always be false. Store 1 is per-agent and not shared across agents."
+    },
+    "shared_with_abigail": {
+      "type": "boolean",
+      "description": "Whether this candidate is visible to Abigail for aggregation (not training)."
+    },
+    "abigail_training_eligible": {
+      "type": "boolean",
+      "const": false,
+      "description": "Must always be false. Abigail training from any delta requires a separate governed path."
+    },
+    "abigail_training_requires_approval": {
+      "type": "boolean",
+      "const": true,
+      "description": "Abigail training always requires explicit operator approval, regardless of source."
+    },
+    "source_store": {
+      "type": "string",
+      "const": "store_2",
+      "description": "Originating store. Always 'store_2' for generated candidates."
+    },
+    "source_run_id": {
+      "type": "string",
+      "description": "Run ID of the Store 2 batch this candidate was derived from."
+    },
+    "source_taxonomy": {
+      "type": "string",
+      "const": "TAX2",
+      "description": "Source taxonomy. Always 'TAX2'."
+    },
+    "source_record_id": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Stable hash identifying the specific Store 2 source record."
+    },
+    "sentinel_source": {
+      "type": "string",
+      "enum": ["heuristic_simulation", "sentinel_overwatch", "legacy_no_source"],
+      "description": "Provenance of the original detection. Determines whether operational actions may be recommended."
+    },
+    "generation": {
+      "type": "string",
+      "enum": ["G2", "G3", "G4", "G5", "G6"],
+      "description": "TAX2 threat generation."
+    },
+    "vector_id": {
+      "type": "string",
+      "description": "TAX2 vector identifier."
+    },
+    "level": {
+      "type": "string",
+      "enum": ["A", "B", "C", "D", "unknown"],
+      "description": "Severity level. D is highest risk."
+    },
+    "memory_action_observed": {
+      "type": "string",
+      "description": "Memory action recorded in the Store 2 source record."
+    },
+    "sentinel_action_observed": {
+      "type": "string",
+      "description": "Sentinel action recorded in the Store 2 source record."
+    },
+    "haap_requirement_observed": {
+      "type": "string",
+      "description": "HAAP requirement recorded in the Store 2 source record."
+    },
+    "finding_type": {
+      "type": "string",
+      "enum": [
+        "simulation_evidence_only",
+        "legacy_analysis_only",
+        "high_risk_detection_confirmed",
+        "quarantine_detection_confirmed",
+        "review_required"
+      ],
+      "description": "Derived classification of the finding. simulation_evidence_only and legacy_analysis_only are always review-only."
+    },
+    "recommended_store1_action": {
+      "type": "string",
+      "enum": [
+        "review_only_no_promotion",
+        "candidate_deny_promotion_rule",
+        "candidate_quarantine_rule",
+        "candidate_observation_rule"
+      ],
+      "description": "Recommended Store 1 action for operator consideration. review_only_no_promotion means no operational action is warranted."
+    },
+    "recommended_memory_action": {
+      "type": "string",
+      "description": "Recommended memory action if this candidate is approved."
+    },
+    "recommended_sentinel_action": {
+      "type": "string",
+      "description": "Recommended sentinel action if this candidate is approved."
+    },
+    "recommended_haap_requirement": {
+      "type": "string",
+      "description": "Recommended HAAP requirement if this candidate is approved."
+    },
+    "rule_delta": {
+      "type": "string",
+      "description": "Sanitized defensive signature delta. Review-only candidates carry a 'review_only|...' prefix and must not be applied."
+    },
+    "audit_reason": {
+      "type": "string",
+      "description": "Audit reason carried from the Store 2 source record."
+    },
+    "operator_approval_required": {
+      "type": "boolean",
+      "const": true,
+      "description": "Must always be true. No candidate may be promoted without operator approval."
+    },
+    "approved_by_operator": {
+      "type": "boolean",
+      "const": false,
+      "description": "Must be false at generation time. Set only by the separate operator-approved patch tool."
+    },
+    "promotion_status": {
+      "type": "string",
+      "const": "candidate_review_required",
+      "description": "Always 'candidate_review_required' at generation time."
+    },
+    "safety_status": {
+      "type": "string",
+      "const": "candidate_only_not_applied",
+      "description": "Always 'candidate_only_not_applied' at generation time. Confirms no Store 1 write occurred."
+    },
+    "created_at": {
+      "type": "string",
+      "format": "date-time",
+      "description": "ISO 8601 UTC timestamp of candidate generation."
+    },
+    "source_file": {
+      "type": "string",
+      "description": "Absolute path to the Store 2 JSONL file this candidate was derived from."
+    }
+  },
+  "additionalProperties": false
+}

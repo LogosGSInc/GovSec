@@ -1,0 +1,45 @@
+name: DEP.KEYSTONE Trust Verification
+
+on:
+  push:
+    branches: ["main"]
+    paths: ["**/requirements*.txt"]
+  pull_request:
+    branches: ["main"]
+    paths: ["**/requirements*.txt"]
+  workflow_dispatch:
+    inputs:
+      min_trust_score:
+        description: "Minimum trust score to pass (0-100)"
+        required: false
+        default: "80"
+
+jobs:
+  verify:
+    name: Trust Bundle Verification
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+      - name: Install DEP.KEYSTONE
+        run: pip install -e .
+      - name: Verify dependency trust bundle
+        run: |
+          dep-keystone verify requirements.txt --project-name my-project --output-dir trust-bundle/
+      - name: Upload Trust Bundle
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: trust-bundle
+          path: trust-bundle/
+          retention-days: 90
+      - name: Enforce minimum trust score
+        run: |
+          SCORE=$(python3 -c "import json; print(json.load(open('trust-bundle/verification-report.json'))['trust_score'])")
+          echo "Trust Score: $SCORE"
+          [ "$SCORE" -ge "80" ] && echo "PASSED" || (echo "FAILED" && exit 1)

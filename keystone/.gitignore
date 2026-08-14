@@ -1,0 +1,8 @@
+out/
+*.egg-info/
+__pycache__/
+*.pyc
+.venv/
+*.sha256
+.env
+*.swp

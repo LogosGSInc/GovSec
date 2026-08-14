@@ -1,0 +1,187 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Store 1 Applied Operational Learning Record",
+  "description": "Schema for GovMem Store 1 applied records. These records exist only after an operator has approved a Store 1 delta candidate through the apply gate (tools/govmem/store1_apply.py). Records are file-backed, scoped to a single agent, and never shared mutably with peer agents. Only sentinel_overwatch provenance may become Store 1 operational truth. This file-backed Store 1 path is not live runtime memory.",
+  "type": "object",
+  "required": [
+    "store",
+    "schema_version",
+    "target_agent_id",
+    "target_agent_role",
+    "agent_scope",
+    "shared_with_peer_agents",
+    "shared_with_abigail",
+    "source_delta_id",
+    "source_store2_run_id",
+    "source_taxonomy",
+    "sentinel_source",
+    "vector_id",
+    "generation",
+    "level",
+    "approved_by_operator",
+    "approval_id",
+    "approved_at",
+    "approved_by",
+    "operational_effect",
+    "memory_action",
+    "sentinel_action",
+    "haap_requirement",
+    "confidence_delta",
+    "expiration",
+    "review_after",
+    "rollback_id",
+    "abigail_training_eligible",
+    "abigail_training_requires_approval",
+    "safety_status",
+    "applied_at",
+    "source_file"
+  ],
+  "properties": {
+    "store": {
+      "type": "string",
+      "const": "store_1",
+      "description": "Always 'store_1'. Identifies this as an applied operational learning record."
+    },
+    "schema_version": {
+      "type": "string",
+      "const": "1.0",
+      "description": "Schema version for the applied record format."
+    },
+    "target_agent_id": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9_-]+$",
+      "description": "Agent this record belongs to. Must be a safe path component. Records live only under agents/<target_agent_id>/."
+    },
+    "target_agent_role": {
+      "type": "string",
+      "description": "Role of the target agent, or 'unknown'."
+    },
+    "agent_scope": {
+      "type": "string",
+      "const": "agent_local",
+      "description": "Always 'agent_local'. Agents cannot overwrite each other's Store 1."
+    },
+    "shared_with_peer_agents": {
+      "type": "boolean",
+      "const": false,
+      "description": "Must always be false. Store 1 is per-agent and never shared mutably across agents."
+    },
+    "shared_with_abigail": {
+      "type": "boolean",
+      "description": "Whether a read-view copy was written to the Abigail aggregation namespace."
+    },
+    "source_delta_id": {
+      "type": "string",
+      "minLength": 1,
+      "description": "source_record_id of the Store 1 delta candidate this record was applied from."
+    },
+    "source_store2_run_id": {
+      "type": "string",
+      "description": "Run ID of the Store 2 batch the candidate was derived from."
+    },
+    "source_taxonomy": {
+      "type": "string",
+      "const": "TAX2",
+      "description": "Source taxonomy. Always 'TAX2'."
+    },
+    "sentinel_source": {
+      "type": "string",
+      "const": "sentinel_overwatch",
+      "description": "Only sentinel_overwatch provenance may be applied. heuristic_simulation and legacy_no_source are rejected at the write gate."
+    },
+    "vector_id": {
+      "type": "string",
+      "description": "TAX2 vector identifier."
+    },
+    "generation": {
+      "type": "string",
+      "enum": ["G2", "G3", "G4", "G5", "G6"],
+      "description": "TAX2 threat generation."
+    },
+    "level": {
+      "type": "string",
+      "enum": ["A", "B", "C", "D"],
+      "description": "Severity level. D is highest risk."
+    },
+    "approved_by_operator": {
+      "type": "boolean",
+      "const": true,
+      "description": "Must be true. The apply gate refuses any record without operator approval."
+    },
+    "approval_id": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Approval ID from the operator approval manifest."
+    },
+    "approved_at": {
+      "type": "string",
+      "description": "ISO 8601 UTC timestamp of operator approval, from the manifest."
+    },
+    "approved_by": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Operator identifier from the manifest."
+    },
+    "operational_effect": {
+      "type": "string",
+      "description": "Human-readable description of what this record changes for the target agent."
+    },
+    "memory_action": {
+      "type": "string",
+      "enum": ["deny_promotion", "quarantine", "do_not_promote"],
+      "description": "Operational memory action, from the candidate's recommended_memory_action."
+    },
+    "sentinel_action": {
+      "type": "string",
+      "enum": ["block_and_escalate", "quarantine", "flag"],
+      "description": "Operational sentinel action, from the candidate's recommended_sentinel_action."
+    },
+    "haap_requirement": {
+      "type": "string",
+      "enum": ["required", "conditional", "none"],
+      "description": "HAAP requirement, from the candidate's recommended_haap_requirement."
+    },
+    "confidence_delta": {
+      "type": "number",
+      "description": "Confidence adjustment. 0.0 at initial apply; tuned by future governed corrections only."
+    },
+    "expiration": {
+      "type": ["string", "null"],
+      "description": "ISO 8601 UTC expiration timestamp, or null if the record does not expire."
+    },
+    "review_after": {
+      "type": ["string", "null"],
+      "description": "ISO 8601 UTC timestamp after which the record should be re-reviewed, or null."
+    },
+    "rollback_id": {
+      "type": ["string", "null"],
+      "description": "ID of a prior record this record replaces, or null. Reserved for a future rollback tool."
+    },
+    "abigail_training_eligible": {
+      "type": "boolean",
+      "const": false,
+      "description": "Must always be false. Abigail training requires a separate governed approval path."
+    },
+    "abigail_training_requires_approval": {
+      "type": "boolean",
+      "const": true,
+      "description": "Abigail training always requires explicit operator approval."
+    },
+    "safety_status": {
+      "type": "string",
+      "const": "store1_applied_approved",
+      "description": "Always 'store1_applied_approved' for applied records."
+    },
+    "applied_at": {
+      "type": "string",
+      "format": "date-time",
+      "description": "ISO 8601 UTC timestamp when the apply gate wrote this record."
+    },
+    "source_file": {
+      "type": "string",
+      "description": "Absolute path to the Store 1 delta candidates JSONL this record was applied from."
+    }
+  },
+  "additionalProperties": false
+}
