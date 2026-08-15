@@ -14,6 +14,7 @@
 //!   POST /session/reset
 //!   POST /session/start
 //!   POST /session/end
+//!   GET  /evidence
 //!   GET  /audit
 
 use std::collections::HashMap;
@@ -24,27 +25,20 @@ use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
 
-use sha2::{Digest, Sha256};
 use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
 
-use governance_spine::capability::{
-    PresentedBinding,
-    AUTHORITY_ACTION_EXECUTE,
-    AUTHORITY_PROVIDER_EXECUTE,
-};
-use governance_spine::pipeline::{ActionAuthorizationRequest, ProviderAuthorizationRequest};
-use governance_spine::envelope::ModelContextEnvelope;
-use governance_spine::{
-    GovernancePipeline,
-    EnforcementResult,
-    ArbiterConfig,
-    OperatorResetAuthority,
-    load_verified_from_paths,
-    trusted_constitution_authority_key,
-    public_key_fingerprint,
-    CryptoEngine,
-};
 use chrono::Utc;
+use governance_spine::capability::{
+    PresentedBinding, AUTHORITY_ACTION_EXECUTE, AUTHORITY_PROVIDER_EXECUTE,
+};
+use governance_spine::envelope::ModelContextEnvelope;
+use governance_spine::pipeline::{ActionAuthorizationRequest, ProviderAuthorizationRequest};
+use governance_spine::{
+    load_verified_from_paths, public_key_fingerprint, trusted_constitution_authority_key,
+    ArbiterConfig, CryptoEngine, EnforcementResult, EvidenceGovernedPipeline,
+    OperatorResetAuthority,
+};
 
 fn ok_json(body: &str) -> String {
     format!(
@@ -57,7 +51,9 @@ fn err_json(status: u16, msg: &str) -> String {
     let body = format!("{{\"ok\":false,\"error\":\"{}\"}}", msg.replace('"', "'"));
     format!(
         "HTTP/1.1 {} Error\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
-        status, body.len(), body
+        status,
+        body.len(),
+        body
     )
 }
 
@@ -93,7 +89,8 @@ struct ActionConsumeRequest {
 }
 
 pub(crate) fn required_json_string(value: &Value, key: &str) -> Result<String, String> {
-    let field = value.get(key)
+    let field = value
+        .get(key)
         .and_then(Value::as_str)
         .map(str::trim)
         .unwrap_or("");
@@ -106,7 +103,8 @@ pub(crate) fn required_json_string(value: &Value, key: &str) -> Result<String, S
 }
 
 pub(crate) fn optional_json_string(value: &Value, key: &str) -> Option<String> {
-    value.get(key)
+    value
+        .get(key)
         .and_then(Value::as_str)
         .map(str::trim)
         .filter(|s| !s.is_empty())
@@ -172,20 +170,28 @@ pub(crate) fn read_line_bounded(
         };
         if available.is_empty() {
             // Peer closed the connection (EOF).
-            return if buf.is_empty() { None } else { Some(String::from_utf8_lossy(&buf).to_string()) };
+            return if buf.is_empty() {
+                None
+            } else {
+                Some(String::from_utf8_lossy(&buf).to_string())
+            };
         }
         match available.iter().position(|&b| b == b'\n') {
             Some(pos) => {
                 buf.extend_from_slice(&available[..=pos]);
                 reader.consume(pos + 1);
-                if buf.len() > max_bytes { return None; }
+                if buf.len() > max_bytes {
+                    return None;
+                }
                 return Some(String::from_utf8_lossy(&buf).to_string());
             }
             None => {
                 buf.extend_from_slice(available);
                 let n = available.len();
                 reader.consume(n);
-                if buf.len() > max_bytes { return None; }
+                if buf.len() > max_bytes {
+                    return None;
+                }
             }
         }
     }
@@ -205,19 +211,19 @@ fn read_request(
             None => return Err("header line too long"),
         };
         let t = line.trim();
-        if t.is_empty() { break; }
+        if t.is_empty() {
+            break;
+        }
         if headers.len() >= MAX_HEADER_COUNT {
             return Err("too many headers");
         }
         if let Some(p) = t.find(':') {
-            headers.insert(
-                t[..p].trim().to_lowercase(),
-                t[p + 1..].trim().to_string(),
-            );
+            headers.insert(t[..p].trim().to_lowercase(), t[p + 1..].trim().to_string());
         }
     }
 
-    let declared_len: usize = headers.get("content-length")
+    let declared_len: usize = headers
+        .get("content-length")
         .and_then(|v| v.parse().ok())
         .unwrap_or(0);
 
@@ -248,10 +254,9 @@ fn service_principal_fingerprint(service_token: &str) -> String {
 /// Runtime policy provenance. This is derived by Sentinel from the policy
 /// configuration it actually starts with; callers cannot assert it.
 fn runtime_policy_hash() -> String {
-    let profile = std::env::var("SENTOW_INDUSTRY_PROFILE")
-        .unwrap_or_else(|_| "consumer".to_string());
-    let govmem_mode = std::env::var("GOVMEM_MODE")
-        .unwrap_or_else(|_| "v1".to_string());
+    let profile =
+        std::env::var("SENTOW_INDUSTRY_PROFILE").unwrap_or_else(|_| "consumer".to_string());
+    let govmem_mode = std::env::var("GOVMEM_MODE").unwrap_or_else(|_| "v1".to_string());
 
     let canonical = format!(
         "governance-spine:{}|industry:{}|govmem:{}",
@@ -264,7 +269,8 @@ fn runtime_policy_hash() -> String {
 }
 
 fn authorized(headers: &HashMap<String, String>, expected_token: &str) -> bool {
-    let provided = headers.get("authorization")
+    let provided = headers
+        .get("authorization")
         .and_then(|value| value.strip_prefix("Bearer "))
         .map(str::trim)
         .unwrap_or("");
@@ -294,7 +300,7 @@ fn verdict_json(result: &EnforcementResult, session_id: &str) -> String {
 
 fn handle(
     stream: &mut TcpStream,
-    pipeline: &Arc<GovernancePipeline>,
+    pipeline: &Arc<EvidenceGovernedPipeline>,
     service_token: &Arc<String>,
 ) {
     let mut reader = BufReader::new(stream as &mut TcpStream);
@@ -303,9 +309,11 @@ fn handle(
         None => return, // malformed/oversized/absent request line — silently drop, as before
     };
     let parts: Vec<&str> = req.split_whitespace().collect();
-    if parts.len() < 2 { return; }
+    if parts.len() < 2 {
+        return;
+    }
     let method = parts[0];
-    let path   = parts[1];
+    let path = parts[1];
     let (headers, body) = match read_request(&mut reader) {
         Ok(v) => v,
         Err(msg) => return write_response(reader, err_json(431, msg)),
@@ -317,8 +325,10 @@ fn handle(
         match (method, path) {
 
         ("GET", "/health") => ok_json(&format!(
-            "{{\"ok\":true,\"service\":\"sentinel-overwatch\",\"audit_entries\":{},\"chain_length\":{}}}",
-            pipeline.audit_entry_count(), pipeline.chain_length()
+            "{{\"ok\":true,\"service\":\"sentinel-overwatch\",\"audit_entries\":{},\"chain_length\":{},\"evidence_entries\":{},\"evidence_pending_sink\":{},\"evidence_epoch\":\"{}\"}}",
+            pipeline.audit_entry_count(), pipeline.chain_length(),
+            pipeline.evidence().len(), pipeline.evidence().pending_sink_count(),
+            pipeline.evidence().epoch_id()
         )),
 
         ("POST", "/inspect") => {
@@ -933,6 +943,41 @@ fn handle(
             ))
         }
 
+        ("GET", "/evidence") => {
+            let entries = pipeline.evidence().snapshot();
+            let items: Vec<Value> = entries.iter().rev().take(50).map(|e| json!({
+                "schema_version": e.schema_version.as_str(),
+                "epoch_parent_hash": e.epoch_parent_hash.as_deref(),
+                "event_id": e.event_id.as_str(),
+                "sequence": e.sequence,
+                "timestamp": e.timestamp.to_rfc3339(),
+                "event_type": e.event_type.as_str(),
+                "gov_tx_id": e.payload.gov_tx_id.as_deref(),
+                "session_id": e.payload.session_id.as_deref(),
+                "run_id": e.payload.run_id.as_deref(),
+                "decision_id": e.payload.decision_id.as_deref(),
+                "capability_id": e.payload.capability_id.as_deref(),
+                "context_hash": e.payload.context_hash.as_deref(),
+                "action_hash": e.payload.action_hash.as_deref(),
+                "tool_name": e.payload.tool_name.as_deref(),
+                "resource_kind": e.payload.resource_kind.as_deref(),
+                "resource_locator_hash": e.payload.resource_locator_hash.as_deref(),
+                "policy_version": e.payload.policy_version.as_deref(),
+                "outcome": e.payload.outcome.as_str(),
+                "previous_event_hash": e.previous_event_hash.as_str(),
+                "event_hash": e.event_hash.as_str(),
+                "signer_fingerprint": e.signer_fingerprint.as_str(),
+                "signer_public_key": e.signer_public_key.as_str(),
+                "signature": e.signature.as_str(),
+            })).collect();
+            json_response(200, json!({
+                "ok": true,
+                "count": entries.len(),
+                "epoch_id": pipeline.evidence().epoch_id(),
+                "entries": items,
+            }))
+        }
+
         ("GET", p) if p.starts_with("/audit") => {
             let entries = pipeline.export_audit_log();
             let last_50: Vec<_> = entries.iter().rev().take(50).collect();
@@ -978,22 +1023,23 @@ fn main() {
     // authentication) — neither substitutes for the other. Loaded and
     // validated once here, before the server accepts any connections.
     let reset_authority = match OperatorResetAuthority::from_config(
-        std::env::var("SENTINEL_OPERATOR_RESET_TOKEN").ok()
+        std::env::var("SENTINEL_OPERATOR_RESET_TOKEN").ok(),
     ) {
         Ok(authority) => authority,
         Err(error) => {
-            eprintln!("[SECURITY ERROR] SENTINEL_OPERATOR_RESET_TOKEN invalid: {}", error);
+            eprintln!(
+                "[SECURITY ERROR] SENTINEL_OPERATOR_RESET_TOKEN invalid: {}",
+                error
+            );
             std::process::exit(1);
         }
     };
 
-    let addr = std::env::var("SENTOW_BIND")
-        .unwrap_or_else(|_| "0.0.0.0:8080".into());
-    let industry = std::env::var("SENTOW_INDUSTRY_PROFILE")
-        .unwrap_or_else(|_| "consumer".into());
+    let addr = std::env::var("SENTOW_BIND").unwrap_or_else(|_| "0.0.0.0:8080".into());
+    let industry = std::env::var("SENTOW_INDUSTRY_PROFILE").unwrap_or_else(|_| "consumer".into());
     let arbiter_config = match industry.as_str() {
         "medical" => ArbiterConfig::medical(),
-        _         => ArbiterConfig::default(),
+        _ => ArbiterConfig::default(),
     };
     // A2: mandatory constitution load + signature verification, BEFORE the
     // pipeline is constructed and BEFORE the listener binds — no request
@@ -1015,7 +1061,9 @@ fn main() {
         Ok(c) => {
             eprintln!(
                 "[CONSTITUTION] verified — id={} version={} profile={} signer_fingerprint={}",
-                c.constitution_id, c.policy_version, c.industry_profile,
+                c.constitution_id,
+                c.policy_version,
+                c.industry_profile,
                 public_key_fingerprint(&trusted_constitution_key),
             );
             c
@@ -1039,7 +1087,10 @@ fn main() {
         "logos_governance_v1_seed",
     ) {
         Ok(c) => {
-            eprintln!("[CRYPTO] audit-signing identity loaded — fingerprint={}", c.verifying_key_fingerprint());
+            eprintln!(
+                "[CRYPTO] audit-signing identity loaded — fingerprint={}",
+                c.verifying_key_fingerprint()
+            );
             Arc::new(c)
         }
         Err(e) => {
@@ -1049,29 +1100,39 @@ fn main() {
     };
 
     let pipeline = Arc::new(
-        GovernancePipeline::new(arbiter_config, Some(constitution), audit_crypto)
-            .expect("Pipeline init failed")
+        EvidenceGovernedPipeline::new(arbiter_config, Some(constitution), audit_crypto, None)
+            .expect("Evidence-governed pipeline init failed"),
     );
     pipeline
         .configure_operator_reset_authority(reset_authority)
         .expect("operator reset authority configured exactly once at startup");
     eprintln!("[SENTINEL-SERVER] Listening on http://{}", addr);
-    eprintln!("[SENTINEL-SERVER] SENTOW_MEMORY_PATH={}",
-        std::env::var("SENTOW_MEMORY_PATH").unwrap_or_else(|_| "(in-memory only)".into()));
+    eprintln!(
+        "[SENTINEL-SERVER] SENTOW_MEMORY_PATH={}",
+        std::env::var("SENTOW_MEMORY_PATH").unwrap_or_else(|_| "(in-memory only)".into())
+    );
 
     // C6: both overridable via env; a missing/unparseable value falls back
     // to the safe default rather than an unbounded one.
     let socket_timeout = Duration::from_secs(
-        std::env::var("SENTOW_SOCKET_TIMEOUT_SECS").ok()
+        std::env::var("SENTOW_SOCKET_TIMEOUT_SECS")
+            .ok()
             .and_then(|v| v.parse().ok())
-            .unwrap_or(DEFAULT_SOCKET_TIMEOUT_SECS)
+            .unwrap_or(DEFAULT_SOCKET_TIMEOUT_SECS),
     );
-    let max_connections = std::env::var("SENTOW_MAX_CONNECTIONS").ok()
+    let max_connections = std::env::var("SENTOW_MAX_CONNECTIONS")
+        .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or(DEFAULT_MAX_CONNECTIONS);
 
     let listener = TcpListener::bind(&addr).expect("Failed to bind");
-    serve(listener, pipeline, service_token, max_connections, socket_timeout);
+    serve(
+        listener,
+        pipeline,
+        service_token,
+        max_connections,
+        socket_timeout,
+    );
 }
 
 /// The accept loop: bounded connection concurrency, and a per-connection
@@ -1081,7 +1142,7 @@ fn main() {
 /// with real sockets instead of only exercising library-level parsing.
 pub(crate) fn serve(
     listener: TcpListener,
-    pipeline: Arc<GovernancePipeline>,
+    pipeline: Arc<EvidenceGovernedPipeline>,
     service_token: Arc<String>,
     max_connections: usize,
     socket_timeout: Duration,

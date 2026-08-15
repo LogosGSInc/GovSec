@@ -67,6 +67,18 @@ The repository intentionally excludes unrelated agent frameworks, model runtimes
 - session-level accumulated governance state;
 - real HTTP enforcement endpoints and loopback tests.
 
+## Evidence Plane
+
+`governance-spine/src/evidence.rs` provides the GovSec Evidence Plane v1 core. It records bounded execution evidence without moving authorization logic into the evidence layer.
+
+Evidence events are append-only, hash-linked, Ed25519-signed, and grouped into explicit epochs. Signed checkpoints verify the expected head and sequence (including tail-truncation detection) and can link a new runtime epoch to the prior evidence head after restart; without a checkpoint, the runtime starts a visibly separate epoch rather than claiming continuity it cannot prove.
+
+The evidence payload excludes raw prompts, model outputs, tool arguments, credentials, and raw resource locators. Resource locators are represented by SHA-256 digests.
+
+`EvidenceGovernedPipeline` records context decisions, provider/action authorization decisions, and capability consumption or rejection while the underlying `GovernancePipeline` remains the sole authority. The HTTP server is wired through this decorator and exposes an authenticated `GET /evidence` export surface for bounded evidence records. External sinks implement the `EvidenceSink` contract; sink outages retain local evidence and queue ordered retry.
+
+The AWS WORM sink and governed OpenClaw mapping are separate deployment/integration steps. See `governance-spine/docs/EVIDENCE_PLANE.md`.
+
 ## Verification
 
     cd governance-spine

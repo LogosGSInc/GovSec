@@ -1,0 +1,35 @@
+name: Rust verification
+
+on:
+  push:
+    branches:
+      - main
+      - 'feat/**'
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test-and-lint:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: governance-spine
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy,rustfmt
+
+      - name: Format check
+        run: rustfmt --edition 2021 --config skip_children=true --check src/evidence.rs src/lib.rs src/server.rs tests/boundary_hardening.rs tests/real_server_loopback.rs
+
+      - name: Test all targets
+        run: cargo test --all-targets --locked
+
+      - name: Clippy
+        run: cargo clippy --all-targets --locked -- -D warnings

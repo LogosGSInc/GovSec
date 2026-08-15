@@ -45,7 +45,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use governance_spine::{
-    load_verified_from_paths, ArbiterConfig, Constitution, CryptoEngine, GovernancePipeline,
+    load_verified_from_paths, ArbiterConfig, Constitution, CryptoEngine, EvidenceGovernedPipeline,
 };
 
 #[path = "../src/server.rs"]
@@ -172,9 +172,10 @@ fn start_real_loopback_server(profile: &str) -> (String, Arc<String>) {
         "medical" => ArbiterConfig::medical(),
         _ => ArbiterConfig::default(),
     };
+    let audit_crypto = ephemeral_audit_crypto();
     let pipeline = Arc::new(
-        GovernancePipeline::new(arbiter_config, Some(constitution), ephemeral_audit_crypto())
-            .expect("pipeline construction"),
+        EvidenceGovernedPipeline::new(arbiter_config, Some(constitution), audit_crypto, None)
+            .expect("evidence-governed pipeline construction"),
     );
 
     let service_token = Arc::new(format!(
@@ -927,7 +928,10 @@ fn heartbeat_authorization_succeeds_with_control_semantics_and_consumes_once() {
     assert_eq!(status, 200, "resp={auth:?}");
     // Exact CONTROL semantics returned by the REAL compiled server.
     assert_eq!(auth["plane"], json!("control"));
-    assert_eq!(auth["normalized_action"], json!("system.telemetry.heartbeat"));
+    assert_eq!(
+        auth["normalized_action"],
+        json!("system.telemetry.heartbeat")
+    );
     assert_eq!(auth["required_for_safe_completion"], json!(false));
     let capability_id = auth["capability_id"].as_str().unwrap().to_string();
     let action_hash = auth["action_hash"].as_str().unwrap().to_string();
@@ -1040,7 +1044,10 @@ fn heartbeat_invalid_schema_fails_closed_on_the_real_server() {
     );
     assert_eq!(status, 403, "resp={auth:?}");
     let error = auth["error"].as_str().unwrap();
-    assert!(error.contains("Denied"), "expected a Denied error, got {error}");
+    assert!(
+        error.contains("Denied"),
+        "expected a Denied error, got {error}"
+    );
     assert!(
         error.contains("ControlSchemaViolation"),
         "expected ControlSchemaViolation risk class, got {error}"
