@@ -146,6 +146,18 @@ pub enum ActionAuthorizationError {
     AlreadyIssued,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum OutboundCorrelationError {
+    MalformedContextHash,
+    ApprovedVerdictMissing,
+    VerdictNotFound,
+    VerdictSessionMismatch,
+    VerdictNotFinalApproved,
+    VerdictWrongDirection,
+    ContextHashMismatch,
+    RunIdMismatch,
+}
+
 pub struct GovernancePipeline {
     sentinel: Sentinel,
     corridor: Corridor,
@@ -1152,6 +1164,65 @@ impl GovernancePipeline {
     pub fn approved_verdict_id(&self, gov_tx_id: &str, session_id: &str) -> Option<String> {
         self.verdict_ledger
             .approved_verdict_id(gov_tx_id, session_id)
+    }
+
+    /// Resolve the authoritative approved context backing Boundary E.
+    ///
+    /// The caller presents only the context/run identity it received from the
+    /// governed context admission path. GovSec resolves the authoritative
+    /// verdict internally and returns the ledger-owned record, including its
+    /// original gov_tx_id. Caller-supplied transaction identifiers are never
+    /// trusted for outbound evidence correlation.
+    pub fn resolve_outbound_context_binding(
+        &self,
+        context_hash: &str,
+        session_id: &str,
+        run_id: &str,
+    ) -> Result<crate::verdict_ledger::VerdictRecord, OutboundCorrelationError> {
+        if !is_sha256_hex(context_hash) {
+            return Err(OutboundCorrelationError::MalformedContextHash);
+        }
+
+        let verdict_id = self
+            .verdict_ledger
+            .approved_verdict_id_by_context(context_hash, session_id)
+            .ok_or(OutboundCorrelationError::ApprovedVerdictMissing)?;
+
+        let (resolve_outcome, record) = self
+            .verdict_ledger
+            .resolve_by_context(&verdict_id, session_id);
+
+        let record = match resolve_outcome {
+            ContextResolveOutcome::Found => {
+                record.ok_or(OutboundCorrelationError::VerdictNotFound)?
+            }
+            ContextResolveOutcome::NotFound => {
+                return Err(OutboundCorrelationError::VerdictNotFound);
+            }
+            ContextResolveOutcome::SessionMismatch => {
+                return Err(OutboundCorrelationError::VerdictSessionMismatch);
+            }
+        };
+
+        if !record.final_approved {
+            return Err(OutboundCorrelationError::VerdictNotFinalApproved);
+        }
+
+        if !matches!(record.direction, Direction::Inbound) {
+            return Err(OutboundCorrelationError::VerdictWrongDirection);
+        }
+
+        match &record.context_hash {
+            Some(hash) if hash == context_hash => {}
+            _ => return Err(OutboundCorrelationError::ContextHashMismatch),
+        }
+
+        match &record.run_id {
+            Some(bound_run_id) if bound_run_id == run_id => {}
+            _ => return Err(OutboundCorrelationError::RunIdMismatch),
+        }
+
+        Ok(record)
     }
 
     /// Convert a final-approved Sentinel transaction into a signed, scoped,
@@ -2167,6 +2238,93 @@ mod provider_capability_tests {
         assert_eq!(
             pipeline.consume_provider_capability(&cross_principal),
             ConsumeOutcome::PrincipalMismatch
+        );
+    }
+
+    #[test]
+    fn outbound_context_binding_resolves_ledger_owned_identity() {
+        let pipeline = GovernancePipeline::default_pipeline().expect("pipeline");
+        let inbound_tx = "GTX-boundary-e-context";
+        let session = "sess-boundary-e";
+        let envelope = approve_context(
+            &pipeline,
+            inbound_tx,
+            session,
+            "run-boundary-e",
+            "trusted-control-plane",
+            "Explain least privilege.",
+        );
+
+        let record = pipeline
+            .resolve_outbound_context_binding(&envelope.context_hash, session, &envelope.run_id)
+            .expect("approved context must resolve");
+
+        assert_eq!(record.gov_tx_id, inbound_tx);
+        assert_eq!(record.session_id, session);
+        assert_eq!(
+            record.context_hash.as_deref(),
+            Some(envelope.context_hash.as_str())
+        );
+        assert_eq!(record.run_id.as_deref(), Some(envelope.run_id.as_str()));
+        assert!(record.final_approved);
+    }
+
+    #[test]
+    fn outbound_context_binding_rejects_unapproved_context() {
+        let pipeline = GovernancePipeline::default_pipeline().expect("pipeline");
+        let envelope = test_envelope(
+            "sess-boundary-e-unapproved",
+            "run1",
+            "trusted-control-plane",
+            "hello",
+        );
+
+        assert_eq!(
+            pipeline
+                .resolve_outbound_context_binding(
+                    &envelope.context_hash,
+                    &envelope.session_id,
+                    &envelope.run_id,
+                )
+                .unwrap_err(),
+            OutboundCorrelationError::ApprovedVerdictMissing
+        );
+    }
+
+    #[test]
+    fn outbound_context_binding_rejects_wrong_run() {
+        let pipeline = GovernancePipeline::default_pipeline().expect("pipeline");
+        let session = "sess-boundary-e-run";
+        let envelope = approve_context(
+            &pipeline,
+            "GTX-boundary-e-run",
+            session,
+            "run-authoritative",
+            "trusted-control-plane",
+            "hello",
+        );
+
+        assert_eq!(
+            pipeline
+                .resolve_outbound_context_binding(&envelope.context_hash, session, "run-attacker",)
+                .unwrap_err(),
+            OutboundCorrelationError::RunIdMismatch
+        );
+    }
+
+    #[test]
+    fn outbound_context_binding_rejects_malformed_hash() {
+        let pipeline = GovernancePipeline::default_pipeline().expect("pipeline");
+
+        assert_eq!(
+            pipeline
+                .resolve_outbound_context_binding(
+                    "not-a-sha256",
+                    "sess-boundary-e-malformed",
+                    "run1",
+                )
+                .unwrap_err(),
+            OutboundCorrelationError::MalformedContextHash
         );
     }
 }

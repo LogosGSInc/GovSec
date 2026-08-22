@@ -67,6 +67,18 @@ The repository intentionally excludes unrelated agent frameworks, model runtimes
 - session-level accumulated governance state;
 - real HTTP enforcement endpoints and loopback tests.
 
+## Evidence Plane
+
+`governance-spine/src/evidence.rs` provides the GovSec Evidence Plane v1 core. It records bounded execution evidence without moving authorization logic into the evidence layer.
+
+Evidence events are append-only, hash-linked, Ed25519-signed, and grouped into explicit epochs. Signed checkpoints verify the expected head and sequence (including tail-truncation detection) and can link a new runtime epoch to the prior evidence head after restart; without a checkpoint, the runtime starts a visibly separate epoch rather than claiming continuity it cannot prove.
+
+The evidence payload excludes raw prompts, model outputs, tool arguments, credentials, and raw resource locators. Resource locators are represented by SHA-256 digests.
+
+`EvidenceGovernedPipeline` records context decisions, provider/action authorization decisions, capability consumption or rejection, and Boundary E outbound release or withholding while the underlying `GovernancePipeline` remains the sole authority. Governed HTTP decision endpoints return the exact `EvidenceAppendReceipt` created by that operation (`event_id`, `event_hash`, `sequence`, `epoch_id`, and `sink_status`), so adapters do not need to infer correlation from the latest evidence record. The authenticated `GET /evidence` endpoint remains a bounded retrieval and verification surface. Boundary E stores only the SHA-256 `outbound_hash` of the exact reviewed outbound payload, never the raw model output. External sinks implement the `EvidenceSink` contract; sink outages retain local evidence and queue ordered retry.
+
+The production AWS WORM archive and governed OpenClaw mapping remain separate deployment/integration steps. This repository does not currently claim that an external WORM archive has been provisioned or verified. See `governance-spine/docs/EVIDENCE_PLANE.md`.
+
 ## Verification
 
     cd governance-spine
