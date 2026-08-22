@@ -1564,4 +1564,128 @@ mod tests {
 
         assert_eq!(EvidencePlane::verify_snapshot(&events), Ok(()));
     }
+
+    #[test]
+    fn compatibility_methods_append_exactly_once() {
+        let governed = EvidenceGovernedPipeline::default_for_test().expect("pipeline");
+
+        let envelope = test_context();
+
+        governed
+            .inbound_context(&envelope, "GTX-single-append")
+            .expect("valid context envelope");
+
+        assert_eq!(
+            governed.evidence().len(),
+            1,
+            "compatibility inbound method must append exactly one event"
+        );
+
+        governed.outbound("released", &envelope.session_id);
+
+        assert_eq!(
+            governed.evidence().len(),
+            2,
+            "compatibility outbound method must append exactly one additional event"
+        );
+    }
+
+    #[test]
+    fn enriched_wrapper_receipts_match_exact_appended_events() {
+        let governed = EvidenceGovernedPipeline::default_for_test().expect("pipeline");
+
+        let envelope = test_context();
+
+        let (context_result, context_receipt) = governed
+            .inbound_context_with_identity_and_evidence(
+                &envelope,
+                "GTX-wrapper-receipts",
+                None,
+                None,
+            );
+
+        assert!(matches!(
+            context_result.expect("valid envelope"),
+            EnforcementResult::Approved(_)
+        ));
+
+        let (action_result, action_receipt) =
+            governed.authorize_action_execution_with_evidence(ActionAuthorizationRequest {
+                gov_tx_id: "GTX-wrapper-receipts-action".to_string(),
+                session_id: envelope.session_id.clone(),
+                run_id: envelope.run_id.clone(),
+                principal_fingerprint: "trusted-wrapper-receipts".to_string(),
+                tool_name: "read".to_string(),
+                arguments: serde_json::json!({
+                    "path": "README.md"
+                }),
+                resource_kind: "file".to_string(),
+                resource_locator: "README.md".to_string(),
+                tool_call_id: "call-wrapper-receipts".to_string(),
+                context_hash: envelope.context_hash.clone(),
+                policy_version: "policy-test-v1".to_string(),
+                policy_hash: sha256_hex(b"policy"),
+            });
+
+        let token = action_result.expect("action capability");
+
+        let binding = PresentedBinding {
+            token_id: &token.token_id,
+            gov_tx_id: &token.gov_tx_id,
+            session_id: &token.session_id,
+            principal_fingerprint: &token.principal_fingerprint,
+            authority: &token.authority,
+            backend: &token.backend,
+            model: &token.model,
+            run_id: &token.run_id,
+            context_hash: &token.context_hash,
+            policy_version: &token.policy_version,
+            policy_hash: &token.policy_hash,
+            action_hash: &token.action_hash,
+            tool_name: &token.tool_name,
+            resource_kind: &token.resource_kind,
+            resource_locator: &token.resource_locator,
+            tool_call_id: &token.tool_call_id,
+            plane: token.action_plane.as_str(),
+        };
+
+        let (consume_outcome, consume_receipt) =
+            governed.consume_provider_capability_with_evidence(&binding);
+
+        assert!(consume_outcome.authorized());
+
+        let (outbound_result, outbound_receipt) = governed.outbound_with_evidence(
+            "done",
+            &envelope.session_id,
+            &envelope.context_hash,
+            &envelope.run_id,
+        );
+
+        assert!(matches!(
+            outbound_result,
+            Ok(EnforcementResult::Approved(_))
+        ));
+
+        let events = governed.evidence().snapshot();
+
+        assert_eq!(
+            events.len(),
+            4,
+            "four governed operations must produce exactly four evidence events"
+        );
+
+        for (receipt, event) in [
+            (&context_receipt, &events[0]),
+            (&action_receipt, &events[1]),
+            (&consume_receipt, &events[2]),
+            (&outbound_receipt, &events[3]),
+        ] {
+            assert_eq!(receipt.event_id, event.event_id);
+            assert_eq!(receipt.event_hash, event.event_hash);
+            assert_eq!(receipt.sequence, event.sequence);
+            assert_eq!(receipt.epoch_id, event.epoch_id);
+        }
+
+        assert_eq!(EvidencePlane::verify_snapshot(&events), Ok(()));
+    }
 }
