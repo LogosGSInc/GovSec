@@ -26,7 +26,7 @@ jobs:
           components: clippy,rustfmt
 
       - name: Format check
-        run: rustfmt --edition 2021 --config skip_children=true --check src/evidence.rs src/lib.rs src/server.rs tests/boundary_hardening.rs tests/real_server_loopback.rs
+        run: rustfmt --edition 2021 --config skip_children=true --check src/evidence.rs src/lib.rs src/pipeline.rs src/server.rs tests/boundary_hardening.rs tests/real_server_loopback.rs
 
       - name: Test all targets
         run: cargo test --all-targets --locked
