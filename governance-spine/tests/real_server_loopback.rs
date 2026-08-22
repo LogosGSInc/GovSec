@@ -231,6 +231,63 @@ fn http_post(base_url: &str, path: &str, token: &str, body: &Value) -> (u16, Val
     parse_http_response(&raw)
 }
 
+fn http_get(base_url: &str, path: &str, token: &str) -> (u16, Value) {
+    let url = url_parts(base_url);
+    let mut stream =
+        TcpStream::connect((url.host.as_str(), url.port)).expect("connect to loopback server");
+    stream
+        .set_read_timeout(Some(Duration::from_secs(10)))
+        .expect("set read timeout");
+
+    let request = format!(
+        "GET {path} HTTP/1.1\r\nHost: {host}\r\nAuthorization: Bearer {token}\r\nConnection: close\r\n\r\n",
+        path = path,
+        host = url.host,
+        token = token,
+    );
+
+    stream
+        .write_all(request.as_bytes())
+        .expect("write GET request");
+
+    let mut raw = Vec::new();
+    stream.read_to_end(&mut raw).expect("read response");
+    parse_http_response(&raw)
+}
+
+fn assert_evidence_receipt(receipt: &Value) {
+    let event_id = receipt["event_id"]
+        .as_str()
+        .expect("evidence receipt event_id");
+    let event_hash = receipt["event_hash"]
+        .as_str()
+        .expect("evidence receipt event_hash");
+    let epoch_id = receipt["epoch_id"]
+        .as_str()
+        .expect("evidence receipt epoch_id");
+    let sequence = receipt["sequence"]
+        .as_u64()
+        .expect("evidence receipt sequence");
+
+    assert!(!event_id.is_empty());
+    assert_eq!(event_hash.len(), 64, "event_hash must be SHA-256 hex");
+    assert!(!epoch_id.is_empty());
+    assert!(sequence >= 1);
+    assert!(
+        !receipt["sink_status"].is_null(),
+        "receipt must report evidence sink status"
+    );
+}
+
+fn evidence_entry_by_event_id<'a>(evidence_response: &'a Value, event_id: &str) -> &'a Value {
+    evidence_response["entries"]
+        .as_array()
+        .expect("GET /evidence entries")
+        .iter()
+        .find(|entry| entry["event_id"].as_str() == Some(event_id))
+        .unwrap_or_else(|| panic!("evidence event {event_id} not returned by GET /evidence"))
+}
+
 struct UrlParts {
     host: String,
     port: u16,
@@ -1180,4 +1237,320 @@ fn ordinary_tool_capability_cannot_be_substituted_for_heartbeat_on_the_real_serv
     );
     assert_eq!(status, 403, "resp={consume:?}");
     assert_eq!(consume["outcome"], json!("CAPABILITY_TOOL_MISMATCH"));
+}
+
+#[test]
+fn inline_evidence_receipts_correlate_to_real_events() {
+    let (base, token) = start_real_loopback_server("consumer");
+    let session_id = "sess-loopback-evidence-contract";
+    let run_id = "run-loopback-evidence-contract";
+
+    let envelope = seal_context_envelope(approved_context_envelope(
+        session_id,
+        run_id,
+        "Exercise the governed evidence contract.",
+    ));
+
+    // Boundary C
+    let (status, context) = http_post(&base, "/context/inspect", &token, &envelope);
+    assert_eq!(status, 200, "resp={context:?}");
+    assert_eq!(context["verdict"], json!("APPROVED"));
+    assert_evidence_receipt(&context["evidence"]);
+
+    let context_event_id = context["evidence"]["event_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let context_hash = context["context_hash"].as_str().unwrap().to_string();
+    let context_gov_tx_id = context["gov_tx_id"].as_str().unwrap().to_string();
+
+    // Boundary D: provider authorization
+    let (status, provider_auth) = http_post(
+        &base,
+        "/provider/authorize",
+        &token,
+        &json!({
+            "gov_tx_id": context_gov_tx_id,
+            "session_id": session_id,
+            "run_id": run_id,
+            "context_hash": context_hash,
+            "backend": "anthropic",
+            "model": "claude-x",
+            "action_class": "llm_inference"
+        }),
+    );
+    assert_eq!(status, 200, "resp={provider_auth:?}");
+    assert_evidence_receipt(&provider_auth["evidence"]);
+
+    let provider_auth_event_id = provider_auth["evidence"]["event_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let provider_capability_id = provider_auth["capability_id"].as_str().unwrap().to_string();
+
+    // Provider capability consumption
+    let (status, provider_consume) = http_post(
+        &base,
+        "/provider/consume",
+        &token,
+        &json!({
+            "capability_id": provider_capability_id,
+            "gov_tx_id": context_gov_tx_id,
+            "session_id": session_id,
+            "run_id": run_id,
+            "context_hash": context_hash,
+            "backend": "anthropic",
+            "model": "claude-x"
+        }),
+    );
+    assert_eq!(status, 200, "resp={provider_consume:?}");
+    assert_eq!(provider_consume["outcome"], json!("CAPABILITY_CONSUMED"));
+    assert_evidence_receipt(&provider_consume["evidence"]);
+
+    let provider_consume_event_id = provider_consume["evidence"]["event_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    // Action authorization gets its own transaction identity.
+    let action_gov_tx_id = next_tx();
+
+    let (status, action_auth) = http_post(
+        &base,
+        "/action/authorize",
+        &token,
+        &json!({
+            "gov_tx_id": action_gov_tx_id,
+            "session_id": session_id,
+            "run_id": run_id,
+            "context_hash": context_hash,
+            "tool_name": "read",
+            "arguments": { "path": "README.md" },
+            "resource_kind": "file",
+            "resource_locator": "README.md",
+            "tool_call_id": "call-evidence-contract-1"
+        }),
+    );
+    assert_eq!(status, 200, "resp={action_auth:?}");
+    assert_evidence_receipt(&action_auth["evidence"]);
+
+    let action_auth_event_id = action_auth["evidence"]["event_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let action_capability_id = action_auth["capability_id"].as_str().unwrap().to_string();
+    let action_hash = action_auth["action_hash"].as_str().unwrap().to_string();
+
+    let (status, action_consume) = http_post(
+        &base,
+        "/action/consume",
+        &token,
+        &json!({
+            "capability_id": action_capability_id,
+            "gov_tx_id": action_gov_tx_id,
+            "session_id": session_id,
+            "run_id": run_id,
+            "context_hash": context_hash,
+            "action_hash": action_hash,
+            "tool_name": "read",
+            "resource_kind": "file",
+            "resource_locator": "README.md",
+            "tool_call_id": "call-evidence-contract-1"
+        }),
+    );
+    assert_eq!(status, 200, "resp={action_consume:?}");
+    assert_eq!(action_consume["outcome"], json!("CAPABILITY_CONSUMED"));
+    assert_evidence_receipt(&action_consume["evidence"]);
+
+    let action_consume_event_id = action_consume["evidence"]["event_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    // Boundary E
+    let outbound_payload = "BOUNDARY_E_HTTP_ARTIFACT_14d72bcd409a43c2b9ae029b158e457f";
+
+    let (status, outbound) = http_post(
+        &base,
+        "/outbound",
+        &token,
+        &json!({
+            "payload": outbound_payload,
+            "session_id": session_id,
+            "context_hash": context_hash,
+            "run_id": run_id
+        }),
+    );
+    assert_eq!(status, 200, "resp={outbound:?}");
+    assert_eq!(outbound["verdict"], json!("APPROVED"));
+    assert_evidence_receipt(&outbound["evidence"]);
+
+    let outbound_event_id = outbound["evidence"]["event_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    // Retrieval is verification/correlation only. Every inline receipt must
+    // resolve to the exact event produced by that governed call.
+    let (status, evidence) = http_get(&base, "/evidence", &token);
+    assert_eq!(status, 200, "resp={evidence:?}");
+
+    let context_event = evidence_entry_by_event_id(&evidence, &context_event_id);
+    assert_eq!(context_event["event_type"], json!("CONTEXT_APPROVED"));
+
+    let provider_auth_event = evidence_entry_by_event_id(&evidence, &provider_auth_event_id);
+    assert_eq!(
+        provider_auth_event["event_type"],
+        json!("PROVIDER_AUTHORIZED")
+    );
+
+    let provider_consume_event = evidence_entry_by_event_id(&evidence, &provider_consume_event_id);
+    assert_eq!(
+        provider_consume_event["event_type"],
+        json!("CAPABILITY_CONSUMED")
+    );
+
+    let action_auth_event = evidence_entry_by_event_id(&evidence, &action_auth_event_id);
+    assert_eq!(action_auth_event["event_type"], json!("ACTION_AUTHORIZED"));
+
+    let action_consume_event = evidence_entry_by_event_id(&evidence, &action_consume_event_id);
+    assert_eq!(
+        action_consume_event["event_type"],
+        json!("CAPABILITY_CONSUMED")
+    );
+
+    let outbound_event = evidence_entry_by_event_id(&evidence, &outbound_event_id);
+    assert_eq!(outbound_event["event_type"], json!("OUTBOUND_RELEASED"));
+    assert_eq!(
+        outbound_event["outbound_hash"],
+        json!(sha256_hex_of(outbound_payload.as_bytes()))
+    );
+    assert_eq!(outbound_event["context_hash"], json!(context_hash));
+    assert_eq!(outbound_event["run_id"], json!(run_id));
+
+    assert_eq!(
+        outbound["evidence"]["event_hash"],
+        outbound_event["event_hash"]
+    );
+    assert_eq!(outbound["evidence"]["sequence"], outbound_event["sequence"]);
+    assert_eq!(outbound["evidence"]["epoch_id"], outbound_event["epoch_id"]);
+
+    let serialized = serde_json::to_string(&evidence).expect("serialize evidence response");
+    assert!(
+        !serialized.contains(outbound_payload),
+        "GET /evidence must not expose raw outbound model output"
+    );
+}
+
+#[test]
+fn outbound_bad_run_returns_withheld_evidence_without_spoofed_correlation() {
+    let (base, token) = start_real_loopback_server("consumer");
+    let session_id = "sess-loopback-boundary-e-reject";
+    let run_id = "run-loopback-boundary-e-authoritative";
+
+    let envelope = seal_context_envelope(approved_context_envelope(
+        session_id,
+        run_id,
+        "Establish an approved context for Boundary E.",
+    ));
+
+    let (status, context) = http_post(&base, "/context/inspect", &token, &envelope);
+    assert_eq!(status, 200, "resp={context:?}");
+    assert_eq!(context["verdict"], json!("APPROVED"));
+
+    let context_hash = context["context_hash"].as_str().unwrap().to_string();
+
+    let outbound_payload = "BOUNDARY_E_HTTP_REJECT_ARTIFACT_bdc9adb22d284684903a32384c107983";
+
+    let (status, withheld) = http_post(
+        &base,
+        "/outbound",
+        &token,
+        &json!({
+            "payload": outbound_payload,
+            "session_id": session_id,
+            "context_hash": context_hash,
+            "run_id": "run-attacker-substitution"
+        }),
+    );
+
+    assert_eq!(status, 403, "resp={withheld:?}");
+    assert_eq!(withheld["ok"], json!(false));
+    assert_eq!(withheld["verdict"], json!("OUTBOUND_WITHHELD"));
+    assert!(withheld["error"]
+        .as_str()
+        .expect("correlation error")
+        .contains("RunIdMismatch"));
+    assert_evidence_receipt(&withheld["evidence"]);
+
+    let event_id = withheld["evidence"]["event_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let (status, evidence) = http_get(&base, "/evidence", &token);
+    assert_eq!(status, 200, "resp={evidence:?}");
+
+    let event = evidence_entry_by_event_id(&evidence, &event_id);
+
+    assert_eq!(event["event_type"], json!("OUTBOUND_WITHHELD"));
+    assert_eq!(
+        event["outbound_hash"],
+        json!(sha256_hex_of(outbound_payload.as_bytes()))
+    );
+
+    // Presented correlation failed authoritative ledger resolution. The
+    // attacker-supplied identity must not become a signed authoritative fact.
+    assert!(event["gov_tx_id"].is_null());
+    assert!(event["session_id"].is_null());
+    assert!(event["run_id"].is_null());
+    assert!(event["context_hash"].is_null());
+
+    let serialized = serde_json::to_string(&evidence).expect("serialize evidence response");
+    assert!(
+        !serialized.contains(outbound_payload),
+        "withheld raw outbound payload must not be persisted in evidence"
+    );
+}
+
+#[test]
+fn structurally_invalid_context_http_evidence_redacts_unverified_identity() {
+    let (base, token) = start_real_loopback_server("consumer");
+
+    let mut envelope = seal_context_envelope(approved_context_envelope(
+        "sess-loopback-structural-redaction",
+        "run-loopback-structural-redaction",
+        "Original structurally valid content.",
+    ));
+
+    // Invalidate the sealed envelope after hashing.
+    envelope["segments"][0]["content"] =
+        json!("Mutated after sealing; correlation is not authoritative.");
+
+    let (status, rejected) = http_post(&base, "/context/inspect", &token, &envelope);
+
+    assert_eq!(status, 400, "resp={rejected:?}");
+    assert_eq!(rejected["ok"], json!(false));
+    assert_evidence_receipt(&rejected["evidence"]);
+
+    let event_id = rejected["evidence"]["event_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let (status, evidence) = http_get(&base, "/evidence", &token);
+    assert_eq!(status, 200, "resp={evidence:?}");
+
+    let event = evidence_entry_by_event_id(&evidence, &event_id);
+
+    assert_eq!(event["event_type"], json!("CONTEXT_REFUSED"));
+    assert_eq!(event["outcome"], json!("STRUCTURAL_VALIDATION_FAILED"));
+
+    assert!(event["gov_tx_id"].is_null());
+    assert!(event["session_id"].is_null());
+    assert!(event["run_id"].is_null());
+    assert!(event["context_hash"].is_null());
 }

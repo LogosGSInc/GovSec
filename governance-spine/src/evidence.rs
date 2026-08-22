@@ -23,7 +23,7 @@ use crate::crypto::CryptoEngine;
 use crate::envelope::ModelContextEnvelope;
 use crate::pipeline::{
     ActionAuthorizationError, ActionAuthorizationRequest, EnforcementResult, GovernancePipeline,
-    ProviderAuthorizationError, ProviderAuthorizationRequest,
+    OutboundCorrelationError, ProviderAuthorizationError, ProviderAuthorizationRequest,
 };
 use crate::ArbiterConfig;
 
@@ -41,6 +41,8 @@ pub enum EvidenceEventType {
     ActionRefused,
     CapabilityConsumed,
     CapabilityRejected,
+    OutboundReleased,
+    OutboundWithheld,
 }
 
 impl EvidenceEventType {
@@ -54,6 +56,8 @@ impl EvidenceEventType {
             Self::ActionRefused => "ACTION_REFUSED",
             Self::CapabilityConsumed => "CAPABILITY_CONSUMED",
             Self::CapabilityRejected => "CAPABILITY_REJECTED",
+            Self::OutboundReleased => "OUTBOUND_RELEASED",
+            Self::OutboundWithheld => "OUTBOUND_WITHHELD",
         }
     }
 }
@@ -71,6 +75,9 @@ pub struct EvidencePayload {
     pub decision_id: Option<String>,
     pub capability_id: Option<String>,
     pub action_hash: Option<String>,
+    /// SHA-256 of the exact outbound payload GovSec reviewed.
+    /// Raw assistant/model output is never stored in EvidencePayload.
+    pub outbound_hash: Option<String>,
     pub tool_name: Option<String>,
     pub resource_kind: Option<String>,
     /// SHA-256 of the resource locator, never the raw locator.
@@ -213,6 +220,7 @@ pub struct EvidenceAppendReceipt {
     pub event_id: String,
     pub event_hash: String,
     pub sequence: u64,
+    pub epoch_id: String,
     pub sink_status: EvidenceSinkStatus,
 }
 
@@ -317,6 +325,7 @@ impl EvidencePlane {
         let sequence = state.next_sequence;
         let timestamp = Utc::now();
         let event_id = format!("EVE-{}", uuid::Uuid::new_v4().simple());
+        let epoch_id = state.epoch_id.clone();
         let previous_event_hash = state.head_hash.clone();
         let signer_fingerprint = self.crypto.verifying_key_fingerprint();
         let signer_public_key = self.crypto.verifying_key_hex();
@@ -376,6 +385,7 @@ impl EvidencePlane {
             event_id,
             event_hash,
             sequence,
+            epoch_id,
             sink_status,
         }
     }
@@ -605,123 +615,179 @@ impl EvidenceGovernedPipeline {
         department_id: Option<&str>,
         agent_id: Option<&str>,
     ) -> Result<EnforcementResult, crate::envelope::EnvelopeError> {
+        self.inbound_context_with_identity_and_evidence(
+            envelope,
+            gov_tx_id,
+            department_id,
+            agent_id,
+        )
+        .0
+    }
+
+    pub fn inbound_context_with_identity_and_evidence(
+        &self,
+        envelope: &ModelContextEnvelope,
+        gov_tx_id: &str,
+        department_id: Option<&str>,
+        agent_id: Option<&str>,
+    ) -> (
+        Result<EnforcementResult, crate::envelope::EnvelopeError>,
+        EvidenceAppendReceipt,
+    ) {
         let result = self.pipeline.inbound_context_with_identity(
             envelope,
             gov_tx_id,
             department_id,
             agent_id,
         );
-        let (event_type, outcome) = match &result {
-            Ok(EnforcementResult::Approved(_)) => {
-                (EvidenceEventType::ContextApproved, "APPROVED".to_string())
+
+        let receipt = match &result {
+            Ok(result) => {
+                let event_type = if matches!(result, EnforcementResult::Approved(_)) {
+                    EvidenceEventType::ContextApproved
+                } else {
+                    EvidenceEventType::ContextRefused
+                };
+
+                self.evidence.append(
+                    event_type,
+                    EvidencePayload {
+                        gov_tx_id: Some(gov_tx_id.to_string()),
+                        session_id: Some(envelope.session_id.clone()),
+                        run_id: Some(envelope.run_id.clone()),
+                        context_hash: Some(envelope.context_hash.clone()),
+                        policy_version: Some(envelope.policy_version.clone()),
+                        policy_hash: Some(envelope.policy_hash.clone()),
+                        outcome: enforcement_outcome(result).to_string(),
+                        ..EvidencePayload::default()
+                    },
+                )
             }
-            Ok(other) => (
-                EvidenceEventType::ContextRefused,
-                enforcement_outcome(other).to_string(),
-            ),
-            Err(_) => (
-                EvidenceEventType::ContextRefused,
-                "STRUCTURAL_VALIDATION_FAILED".to_string(),
-            ),
+            Err(_) => {
+                // The structural failure itself is evidence-worthy, but none
+                // of the envelope correlation fields have passed structural
+                // verification. Do not promote them into authoritative signed
+                // evidence.
+                self.evidence.append(
+                    EvidenceEventType::ContextRefused,
+                    EvidencePayload {
+                        outcome: "STRUCTURAL_VALIDATION_FAILED".to_string(),
+                        ..EvidencePayload::default()
+                    },
+                )
+            }
         };
-        self.evidence.append(
-            event_type,
-            EvidencePayload {
-                gov_tx_id: Some(gov_tx_id.to_string()),
-                session_id: Some(envelope.session_id.clone()),
-                run_id: Some(envelope.run_id.clone()),
-                context_hash: Some(envelope.context_hash.clone()),
-                policy_version: Some(envelope.policy_version.clone()),
-                policy_hash: Some(envelope.policy_hash.clone()),
-                outcome,
-                ..EvidencePayload::default()
-            },
-        );
-        result
+
+        (result, receipt)
     }
 
     pub fn authorize_provider_execution(
         &self,
         req: ProviderAuthorizationRequest,
     ) -> Result<CapabilityToken, ProviderAuthorizationError> {
+        self.authorize_provider_execution_with_evidence(req).0
+    }
+
+    pub fn authorize_provider_execution_with_evidence(
+        &self,
+        req: ProviderAuthorizationRequest,
+    ) -> (
+        Result<CapabilityToken, ProviderAuthorizationError>,
+        EvidenceAppendReceipt,
+    ) {
         let evidence_req = req.clone();
         let result = self.pipeline.authorize_provider_execution(req);
-        match &result {
-            Ok(token) => {
-                self.evidence.append(
-                    EvidenceEventType::ProviderAuthorized,
-                    payload_from_token(token, "AUTHORIZED"),
-                );
-            }
-            Err(error) => {
-                self.evidence.append(
-                    EvidenceEventType::ProviderRefused,
-                    EvidencePayload {
-                        gov_tx_id: Some(evidence_req.gov_tx_id),
-                        session_id: Some(evidence_req.session_id),
-                        run_id: Some(evidence_req.run_id),
-                        principal_fingerprint: Some(evidence_req.principal_fingerprint),
-                        authority: Some("provider.execute".to_string()),
-                        context_hash: Some(evidence_req.context_hash),
-                        policy_version: Some(evidence_req.policy_version),
-                        policy_hash: Some(evidence_req.policy_hash),
-                        outcome: format!("{:?}", error),
-                        ..EvidencePayload::default()
-                    },
-                );
-            }
-        }
-        result
+
+        let receipt = match &result {
+            Ok(token) => self.evidence.append(
+                EvidenceEventType::ProviderAuthorized,
+                payload_from_token(token, "AUTHORIZED"),
+            ),
+            Err(error) => self.evidence.append(
+                EvidenceEventType::ProviderRefused,
+                EvidencePayload {
+                    gov_tx_id: Some(evidence_req.gov_tx_id),
+                    session_id: Some(evidence_req.session_id),
+                    run_id: Some(evidence_req.run_id),
+                    principal_fingerprint: Some(evidence_req.principal_fingerprint),
+                    authority: Some("provider.execute".to_string()),
+                    context_hash: Some(evidence_req.context_hash),
+                    policy_version: Some(evidence_req.policy_version),
+                    policy_hash: Some(evidence_req.policy_hash),
+                    outcome: format!("{:?}", error),
+                    ..EvidencePayload::default()
+                },
+            ),
+        };
+
+        (result, receipt)
     }
 
     pub fn authorize_action_execution(
         &self,
         req: ActionAuthorizationRequest,
     ) -> Result<CapabilityToken, ActionAuthorizationError> {
+        self.authorize_action_execution_with_evidence(req).0
+    }
+
+    pub fn authorize_action_execution_with_evidence(
+        &self,
+        req: ActionAuthorizationRequest,
+    ) -> (
+        Result<CapabilityToken, ActionAuthorizationError>,
+        EvidenceAppendReceipt,
+    ) {
         let evidence_req = req.clone();
         let result = self.pipeline.authorize_action_execution(req);
-        match &result {
-            Ok(token) => {
-                self.evidence.append(
-                    EvidenceEventType::ActionAuthorized,
-                    payload_from_token(token, "AUTHORIZED"),
-                );
-            }
-            Err(error) => {
-                self.evidence.append(
-                    EvidenceEventType::ActionRefused,
-                    EvidencePayload {
-                        gov_tx_id: Some(evidence_req.gov_tx_id),
-                        session_id: Some(evidence_req.session_id),
-                        run_id: Some(evidence_req.run_id),
-                        principal_fingerprint: Some(evidence_req.principal_fingerprint),
-                        authority: Some(AUTHORITY_ACTION_EXECUTE.to_string()),
-                        context_hash: Some(evidence_req.context_hash),
-                        tool_name: Some(evidence_req.tool_name),
-                        resource_kind: Some(evidence_req.resource_kind),
-                        resource_locator_hash: Some(CryptoEngine::compute_hash(
-                            &evidence_req.resource_locator,
-                        )),
-                        tool_call_id: Some(evidence_req.tool_call_id),
-                        policy_version: Some(evidence_req.policy_version),
-                        policy_hash: Some(evidence_req.policy_hash),
-                        outcome: format!("{:?}", error),
-                        ..EvidencePayload::default()
-                    },
-                );
-            }
-        }
-        result
+
+        let receipt = match &result {
+            Ok(token) => self.evidence.append(
+                EvidenceEventType::ActionAuthorized,
+                payload_from_token(token, "AUTHORIZED"),
+            ),
+            Err(error) => self.evidence.append(
+                EvidenceEventType::ActionRefused,
+                EvidencePayload {
+                    gov_tx_id: Some(evidence_req.gov_tx_id),
+                    session_id: Some(evidence_req.session_id),
+                    run_id: Some(evidence_req.run_id),
+                    principal_fingerprint: Some(evidence_req.principal_fingerprint),
+                    authority: Some(AUTHORITY_ACTION_EXECUTE.to_string()),
+                    context_hash: Some(evidence_req.context_hash),
+                    tool_name: Some(evidence_req.tool_name),
+                    resource_kind: Some(evidence_req.resource_kind),
+                    resource_locator_hash: Some(CryptoEngine::compute_hash(
+                        &evidence_req.resource_locator,
+                    )),
+                    tool_call_id: Some(evidence_req.tool_call_id),
+                    policy_version: Some(evidence_req.policy_version),
+                    policy_hash: Some(evidence_req.policy_hash),
+                    outcome: format!("{:?}", error),
+                    ..EvidencePayload::default()
+                },
+            ),
+        };
+
+        (result, receipt)
     }
 
     pub fn consume_provider_capability(&self, binding: &PresentedBinding<'_>) -> ConsumeOutcome {
+        self.consume_provider_capability_with_evidence(binding).0
+    }
+
+    pub fn consume_provider_capability_with_evidence(
+        &self,
+        binding: &PresentedBinding<'_>,
+    ) -> (ConsumeOutcome, EvidenceAppendReceipt) {
         let outcome = self.pipeline.consume_provider_capability(binding);
+
         let event_type = if outcome.authorized() {
             EvidenceEventType::CapabilityConsumed
         } else {
             EvidenceEventType::CapabilityRejected
         };
-        self.evidence.append(
+
+        let receipt = self.evidence.append(
             event_type,
             EvidencePayload {
                 gov_tx_id: Some(binding.gov_tx_id.to_string()),
@@ -746,7 +812,92 @@ impl EvidenceGovernedPipeline {
                 ..EvidencePayload::default()
             },
         );
-        outcome
+
+        (outcome, receipt)
+    }
+
+    /// Compatibility Boundary E entry point. It records the outbound decision,
+    /// but does not assert execution-context correlation because this legacy
+    /// API does not carry a context_hash/run_id pair.
+    pub fn outbound(&self, model_output: &str, session_id: &str) -> EnforcementResult {
+        let result = self.pipeline.outbound(model_output, session_id);
+
+        let event_type = if matches!(&result, EnforcementResult::Approved(_)) {
+            EvidenceEventType::OutboundReleased
+        } else {
+            EvidenceEventType::OutboundWithheld
+        };
+
+        self.evidence.append(
+            event_type,
+            EvidencePayload {
+                outbound_hash: Some(CryptoEngine::compute_hash(model_output)),
+                outcome: enforcement_outcome(&result).to_string(),
+                ..EvidencePayload::default()
+            },
+        );
+
+        result
+    }
+
+    /// Production Boundary E path.
+    ///
+    /// Presented context identifiers are resolved against GovSec-owned verdict
+    /// state before they are placed in signed evidence.
+    pub fn outbound_with_evidence(
+        &self,
+        model_output: &str,
+        session_id: &str,
+        context_hash: &str,
+        run_id: &str,
+    ) -> (
+        Result<EnforcementResult, OutboundCorrelationError>,
+        EvidenceAppendReceipt,
+    ) {
+        let outbound_hash = CryptoEngine::compute_hash(model_output);
+
+        let record =
+            match self
+                .pipeline
+                .resolve_outbound_context_binding(context_hash, session_id, run_id)
+            {
+                Ok(record) => record,
+                Err(error) => {
+                    let receipt = self.evidence.append(
+                        EvidenceEventType::OutboundWithheld,
+                        EvidencePayload {
+                            outbound_hash: Some(outbound_hash),
+                            outcome: format!("CORRELATION_REJECTED::{:?}", error),
+                            ..EvidencePayload::default()
+                        },
+                    );
+                    return (Err(error), receipt);
+                }
+            };
+
+        let result = self.pipeline.outbound(model_output, &record.session_id);
+
+        let event_type = if matches!(&result, EnforcementResult::Approved(_)) {
+            EvidenceEventType::OutboundReleased
+        } else {
+            EvidenceEventType::OutboundWithheld
+        };
+
+        let receipt = self.evidence.append(
+            event_type,
+            EvidencePayload {
+                gov_tx_id: Some(record.gov_tx_id),
+                session_id: Some(record.session_id),
+                run_id: record.run_id,
+                context_hash: record.context_hash,
+                outbound_hash: Some(outbound_hash),
+                policy_version: Some(self.pipeline.active_policy_version()),
+                outcome: enforcement_outcome(&result).to_string(),
+                ..EvidencePayload::default()
+            },
+        );
+
+        (Ok(result), receipt)
     }
 
     pub fn evidence(&self) -> &EvidencePlane {
@@ -777,6 +928,7 @@ fn payload_from_token(token: &CapabilityToken, outcome: &str) -> EvidencePayload
         decision_id: Some(token.haap_decision_id.clone()),
         capability_id: Some(token.token_id.clone()),
         action_hash: nonempty(&token.action_hash),
+        outbound_hash: None,
         tool_name: nonempty(&token.tool_name),
         resource_kind: nonempty(&token.resource_kind),
         resource_locator_hash: if token.resource_locator.is_empty() {
@@ -862,6 +1014,7 @@ fn canonical_event_material(event: &EvidenceEvent) -> String {
         enc_opt(payload.decision_id.as_deref()),
         enc_opt(payload.capability_id.as_deref()),
         enc_opt(payload.action_hash.as_deref()),
+        enc_opt(payload.outbound_hash.as_deref()),
         enc_opt(payload.tool_name.as_deref()),
         enc_opt(payload.resource_kind.as_deref()),
         enc_opt(payload.resource_locator_hash.as_deref()),
@@ -1186,6 +1339,229 @@ mod tests {
             ]
         );
         assert_eq!(events[3].payload.outcome, "CAPABILITY_REPLAY_REJECTED");
+        assert_eq!(EvidencePlane::verify_snapshot(&events), Ok(()));
+    }
+
+    #[test]
+    fn boundary_e_released_binds_exact_outbound_and_receipt() {
+        let governed = EvidenceGovernedPipeline::default_for_test().expect("pipeline");
+        let envelope = test_context();
+
+        let (context_result, context_receipt) = governed
+            .inbound_context_with_identity_and_evidence(
+                &envelope,
+                "GTX-boundary-e-context",
+                None,
+                None,
+            );
+
+        assert!(matches!(
+            context_result.expect("valid context"),
+            EnforcementResult::Approved(_)
+        ));
+
+        let outbound = "BOUNDARY_E_EXACT_ARTIFACT_7c8e793f1c72409fb8ce4ea3d6ec1979";
+
+        let (result, receipt) = governed.outbound_with_evidence(
+            outbound,
+            &envelope.session_id,
+            &envelope.context_hash,
+            &envelope.run_id,
+        );
+
+        assert!(matches!(
+            result.expect("authoritative outbound correlation"),
+            EnforcementResult::Approved(_)
+        ));
+
+        let events = governed.evidence().snapshot();
+        let event = events.last().expect("outbound evidence");
+
+        assert_eq!(event.event_type, EvidenceEventType::OutboundReleased);
+        assert_eq!(
+            event.payload.outbound_hash.as_deref(),
+            Some(CryptoEngine::compute_hash(outbound).as_str())
+        );
+
+        assert_eq!(
+            event.payload.gov_tx_id.as_deref(),
+            Some("GTX-boundary-e-context")
+        );
+        assert_eq!(
+            event.payload.session_id.as_deref(),
+            Some(envelope.session_id.as_str())
+        );
+        assert_eq!(
+            event.payload.context_hash.as_deref(),
+            Some(envelope.context_hash.as_str())
+        );
+        assert_eq!(
+            event.payload.run_id.as_deref(),
+            Some(envelope.run_id.as_str())
+        );
+
+        assert_eq!(receipt.event_id, event.event_id);
+        assert_eq!(receipt.event_hash, event.event_hash);
+        assert_eq!(receipt.sequence, event.sequence);
+        assert_eq!(receipt.epoch_id, event.epoch_id);
+
+        assert_eq!(context_receipt.epoch_id, event.epoch_id);
+        assert_eq!(EvidencePlane::verify_snapshot(&events), Ok(()));
+    }
+
+    #[test]
+    fn boundary_e_bad_run_fails_closed_without_signing_spoofed_correlation() {
+        let governed = EvidenceGovernedPipeline::default_for_test().expect("pipeline");
+        let envelope = test_context();
+
+        let context_result = governed
+            .inbound_context(&envelope, "GTX-boundary-e-authoritative")
+            .expect("valid context");
+
+        assert!(matches!(context_result, EnforcementResult::Approved(_)));
+
+        let outbound = "BOUNDARY_E_CORRELATION_FAILURE_ARTIFACT_80473a5836524a05a518e2b402cc7434";
+
+        let (result, receipt) = governed.outbound_with_evidence(
+            outbound,
+            &envelope.session_id,
+            &envelope.context_hash,
+            "run-attacker-controlled",
+        );
+
+        assert_eq!(result.unwrap_err(), OutboundCorrelationError::RunIdMismatch);
+
+        let events = governed.evidence().snapshot();
+        let event = events.last().expect("withheld evidence");
+
+        assert_eq!(event.event_type, EvidenceEventType::OutboundWithheld);
+        assert!(event.payload.outcome.contains("CORRELATION_REJECTED"));
+        assert!(event.payload.outcome.contains("RunIdMismatch"));
+
+        // Critical security property: unverified caller identity is not
+        // promoted into authoritative signed evidence.
+        assert!(event.payload.gov_tx_id.is_none());
+        assert!(event.payload.session_id.is_none());
+        assert!(event.payload.run_id.is_none());
+        assert!(event.payload.context_hash.is_none());
+
+        assert_eq!(
+            event.payload.outbound_hash.as_deref(),
+            Some(CryptoEngine::compute_hash(outbound).as_str())
+        );
+
+        assert_eq!(receipt.event_id, event.event_id);
+        assert_eq!(receipt.event_hash, event.event_hash);
+        assert_eq!(receipt.sequence, event.sequence);
+        assert_eq!(receipt.epoch_id, event.epoch_id);
+
+        assert_eq!(EvidencePlane::verify_snapshot(&events), Ok(()));
+    }
+
+    #[test]
+    fn boundary_e_serialization_excludes_raw_output_but_includes_hash() {
+        let governed = EvidenceGovernedPipeline::default_for_test().expect("pipeline");
+        let envelope = test_context();
+
+        let context_result = governed
+            .inbound_context(&envelope, "GTX-boundary-e-redaction")
+            .expect("valid context");
+
+        assert!(matches!(context_result, EnforcementResult::Approved(_)));
+
+        let outbound = "DO_NOT_PERSIST_RAW_OUTBOUND_bfdf6fca38ca40ccac2af967e346fe99";
+
+        let (result, _) = governed.outbound_with_evidence(
+            outbound,
+            &envelope.session_id,
+            &envelope.context_hash,
+            &envelope.run_id,
+        );
+
+        result.expect("authoritative correlation");
+
+        let encoded = serde_json::to_string(&governed.evidence().snapshot()).expect("serialize");
+
+        assert!(
+            !encoded.contains(outbound),
+            "raw model output must never appear in serialized evidence"
+        );
+
+        assert!(
+            encoded.contains(&CryptoEngine::compute_hash(outbound)),
+            "hash of exact reviewed outbound artifact must be present"
+        );
+    }
+
+    #[test]
+    fn boundary_e_outbound_hash_mutation_breaks_chain_verification() {
+        let governed = EvidenceGovernedPipeline::default_for_test().expect("pipeline");
+        let envelope = test_context();
+
+        let context_result = governed
+            .inbound_context(&envelope, "GTX-boundary-e-mutation")
+            .expect("valid context");
+
+        assert!(matches!(context_result, EnforcementResult::Approved(_)));
+
+        let outbound = "BOUNDARY_E_HASH_MUTATION_PROBE_d9d78ee8b6f34c9a990e1f73c763a421";
+
+        let (result, _) = governed.outbound_with_evidence(
+            outbound,
+            &envelope.session_id,
+            &envelope.context_hash,
+            &envelope.run_id,
+        );
+
+        result.expect("authoritative correlation");
+
+        let mut events = governed.evidence().snapshot();
+        let last = events.last_mut().expect("outbound event");
+        last.payload.outbound_hash = Some(CryptoEngine::compute_hash("different-output"));
+
+        assert!(matches!(
+            EvidencePlane::verify_snapshot(&events),
+            Err(EvidenceVerificationError::HashMismatch { .. })
+        ));
+    }
+
+    #[test]
+    fn structurally_invalid_context_does_not_sign_unverified_correlation() {
+        let governed = EvidenceGovernedPipeline::default_for_test().expect("pipeline");
+        let mut envelope = test_context();
+
+        // Mutation after sealing makes the envelope structurally invalid.
+        envelope.run_id = "run-attacker-mutated-after-seal".to_string();
+
+        let (result, receipt) = governed.inbound_context_with_identity_and_evidence(
+            &envelope,
+            "GTX-unverified-structural-input",
+            None,
+            None,
+        );
+
+        assert!(result.is_err());
+
+        let events = governed.evidence().snapshot();
+        let event = events.last().expect("structural refusal evidence");
+
+        assert_eq!(event.event_type, EvidenceEventType::ContextRefused);
+        assert_eq!(event.payload.outcome, "STRUCTURAL_VALIDATION_FAILED");
+
+        // Nothing supplied through the structurally invalid envelope is
+        // represented as authoritative signed correlation.
+        assert!(event.payload.gov_tx_id.is_none());
+        assert!(event.payload.session_id.is_none());
+        assert!(event.payload.run_id.is_none());
+        assert!(event.payload.context_hash.is_none());
+        assert!(event.payload.policy_version.is_none());
+        assert!(event.payload.policy_hash.is_none());
+
+        assert_eq!(receipt.event_id, event.event_id);
+        assert_eq!(receipt.event_hash, event.event_hash);
+        assert_eq!(receipt.sequence, event.sequence);
+        assert_eq!(receipt.epoch_id, event.epoch_id);
+
         assert_eq!(EvidencePlane::verify_snapshot(&events), Ok(()));
     }
 }

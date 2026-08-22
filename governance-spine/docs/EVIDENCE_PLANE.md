@@ -18,7 +18,7 @@ Each evidence event carries:
 
 `EvidencePlane::verify_snapshot` detects mutation, interior deletion, reordering, chain-parent substitution, mixed epochs, mixed signers, invalid sequence values, and invalid signatures. `verify_snapshot_against_checkpoint` additionally detects tail truncation against a signed checkpoint.
 
-The evidence payload intentionally excludes raw prompts, model outputs, tool arguments, credentials, and raw resource locators. Resource locators are represented by SHA-256 digests.
+The evidence payload intentionally excludes raw prompts, model outputs, tool arguments, credentials, and raw resource locators. Resource locators are represented by SHA-256 digests. Boundary E records the SHA-256 digest of the exact outbound payload reviewed by GovSec as `outbound_hash`; the raw outbound model output is not persisted in the evidence payload.
 
 ## Epochs and restart continuity
 
@@ -28,7 +28,7 @@ Evidence continuity across process restarts is explicit rather than implied.
 
 If no checkpoint is supplied, the runtime starts a new independently identifiable epoch. It does not claim continuity with an earlier process.
 
-Persisting the checkpoint is a deployment responsibility. The planned external WORM sink is the long-term persistence boundary; it is intentionally not implemented by this first Rust core.
+Persisting the checkpoint is a deployment responsibility. The Evidence Plane exposes an external `EvidenceSink` contract, but no production WORM archive is provisioned or verified by this repository. External durable retention remains a deployment responsibility.
 
 ## Sink model
 
@@ -46,13 +46,26 @@ It currently records:
 - provider capability authorization or refusal;
 - action capability authorization or refusal;
 - capability consumption;
-- capability rejection, including replay and binding mismatch outcomes returned by the existing capability verifier.
+- capability rejection, including replay and binding mismatch outcomes returned by the existing capability verifier;
+- Boundary E outbound release or withholding.
+
+Boundary E resolves the presented `context_hash`, `session_id`, and `run_id` against GovSec-owned approved-verdict state before outbound correlation is represented as authoritative evidence. The authoritative `gov_tx_id` is derived from the resolved verdict record rather than supplied by the outbound caller. Correlation failure fails closed as `OUTBOUND_WITHHELD` and does not promote unverified caller-supplied transaction, context, or run identifiers into signed evidence.
 
 The decorator uses the same `Arc<CryptoEngine>` supplied to `GovernancePipeline`, so evidence signatures and existing runtime audit signatures share the configured runtime signing identity.
 
 ## Integration boundary
 
-The `governance_spine_server` runtime is wired through `EvidenceGovernedPipeline`. Its authenticated `GET /evidence` endpoint exports the bounded evidence records needed by a private adapter or evidence collector without exposing raw tool arguments or resource locators.
+The `governance_spine_server` runtime is wired through `EvidenceGovernedPipeline`. Governed HTTP decision endpoints return the `EvidenceAppendReceipt` produced by that exact operation:
+
+- `event_id`;
+- `event_hash`;
+- `sequence`;
+- `epoch_id`;
+- `sink_status`.
+
+This same-call receipt is the primary correlation mechanism for adapters. A caller does not need to discover its evidence by querying for the most recent event.
+
+The authenticated `GET /evidence` endpoint remains a bounded retrieval and verification surface. It exposes signed evidence metadata, including per-event `epoch_id` and Boundary E `outbound_hash`, without exposing raw outbound model output, raw tool arguments, credentials, or raw resource locators.
 
 This module is the GovSec-side evidence core. Product adapters and agent frameworks should consume GovSec decisions and evidence receipts; they must not recreate the decision logic themselves.
 
@@ -70,8 +83,10 @@ cargo test --all-targets
 cargo clippy --all-targets -- -D warnings
 ```
 
-Evidence-plane tests cover chain verification, signature verification, mutation detection, deletion/reordering detection, signed checkpoint continuity, external sink failure/retry behavior, and an end-to-end context -> action authorization -> consume -> replay evidence sequence.
+Evidence-plane tests cover chain verification, signature verification, mutation detection, deletion/reordering detection, signed checkpoint continuity, external sink failure/retry behavior, structural-failure correlation redaction, Boundary E release/withhold behavior, outbound-hash binding, raw-output non-disclosure, and receipt-to-event correlation.
+
+The real loopback integration suite also exercises the actual HTTP routing over TCP with a real `EvidenceGovernedPipeline` and cryptographically verified test constitution. It proves inline evidence receipts for context, provider, action, capability-consumption, and outbound decisions, including Boundary E fail-closed correlation rejection.
 
 ## Scope
 
-Evidence Plane v1 is an implementation feature, not a compliance certification. External immutable retention, deployment-specific pseudonymization policy, retention periods, key-management controls, and WORM storage configuration remain deployment responsibilities until the AWS evidence sink is provisioned and verified.
+Evidence Plane v1 is an implementation feature, not a compliance certification. Production WORM retention, deployment-specific pseudonymization policy, retention periods, key-management controls, archive administration boundaries, and external durable storage configuration remain deployment responsibilities until an AWS evidence archive is provisioned and verified.

@@ -9,7 +9,7 @@ Current limitations include:
 - Correct enforcement depends on every consequential execution path actually reaching the applicable GovSec boundary.
 - The baseline action classifier recognizes a finite vocabulary and denies unknown action classes by default.
 - Cross-session strategic actor memory does not currently provide a server-authenticated durable actor identity suitable for authorization-bearing decisions.
-- Evidence Plane v1 provides signed, hash-linked local evidence, explicit signed checkpoints, and an external sink contract, but the independently operated WORM sink is not provisioned by this repository.
+- Evidence Plane v1 provides signed, hash-linked local evidence, explicit signed checkpoints, inline same-operation evidence receipts, Boundary E outbound evidence, and an external sink contract, but a production independently administered WORM archive is not provisioned or verified by this repository.
 - Evidence checkpoint persistence and restoration are deployment responsibilities until the external durable evidence sink is configured and verified.
 - Runtime state durability depends on deployment configuration and must be verified for the intended environment.
 - Test success and demonstration evidence do not constitute independent penetration testing, formal verification, SOC 2, HIPAA, FedRAMP, or another compliance certification.

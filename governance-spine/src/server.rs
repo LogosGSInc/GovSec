@@ -36,8 +36,8 @@ use governance_spine::envelope::ModelContextEnvelope;
 use governance_spine::pipeline::{ActionAuthorizationRequest, ProviderAuthorizationRequest};
 use governance_spine::{
     load_verified_from_paths, public_key_fingerprint, trusted_constitution_authority_key,
-    ArbiterConfig, CryptoEngine, EnforcementResult, EvidenceGovernedPipeline,
-    OperatorResetAuthority,
+    ArbiterConfig, CryptoEngine, EnforcementResult, EvidenceAppendReceipt,
+    EvidenceGovernedPipeline, OperatorResetAuthority,
 };
 
 fn ok_json(body: &str) -> String {
@@ -63,6 +63,16 @@ fn json_response(status: u16, body: Value) -> String {
         "HTTP/1.1 {} Response\r\nContent-Type: application/json\r\nContent-Length: {}\r\nAccess-Control-Allow-Origin: http://localhost:7070\r\nX-Content-Type-Options: nosniff\r\n\r\n{}",
         status, body.len(), body
     )
+}
+
+fn evidence_receipt_json(receipt: &EvidenceAppendReceipt) -> Value {
+    json!({
+        "event_id": receipt.event_id.as_str(),
+        "event_hash": receipt.event_hash.as_str(),
+        "sequence": receipt.sequence,
+        "epoch_id": receipt.epoch_id.as_str(),
+        "sink_status": &receipt.sink_status,
+    })
 }
 
 struct ProviderConsumeRequest {
@@ -406,17 +416,49 @@ fn handle(
                     json_response(400, json!({"ok": false, "error": "valid JSON body required"}))
                 ),
             };
-            let parsed = (|| -> Result<(String, String), String> {
+
+            let parsed = (|| -> Result<(String, String, String, String), String> {
                 let payload = required_json_string(&body_value, "payload")?;
                 let session_id = required_json_string(&body_value, "session_id")?;
-                Ok((payload, session_id))
+                let context_hash = required_json_string(&body_value, "context_hash")?;
+                let run_id = required_json_string(&body_value, "run_id")?;
+                Ok((payload, session_id, context_hash, run_id))
             })();
 
             match parsed {
-                Err(error) => err_json(400, &error),
-                Ok((payload, session_id)) => {
-                    let r = pipeline.outbound(&payload, &session_id);
-                    ok_json(&verdict_json(&r, &session_id))
+                Err(error) => json_response(400, json!({
+                    "ok": false,
+                    "error": error
+                })),
+                Ok((payload, session_id, context_hash, run_id)) => {
+                    let (result, receipt) = pipeline.outbound_with_evidence(
+                        &payload,
+                        &session_id,
+                        &context_hash,
+                        &run_id,
+                    );
+
+                    match result {
+                        Ok(result) => {
+                            let mut value: Value = serde_json::from_str(
+                                &verdict_json(&result, &session_id)
+                            ).unwrap_or_else(|_| json!({
+                                "ok": false,
+                                "verdict": "SERIALIZATION_ERROR",
+                                "session_id": session_id
+                            }));
+
+                            value["evidence"] = evidence_receipt_json(&receipt);
+                            json_response(200, value)
+                        }
+                        Err(error) => json_response(403, json!({
+                            "ok": false,
+                            "verdict": "OUTBOUND_WITHHELD",
+                            "authorized": false,
+                            "error": format!("{:?}", error),
+                            "evidence": evidence_receipt_json(&receipt)
+                        })),
+                    }
                 }
             }
         }
@@ -440,12 +482,19 @@ fn handle(
             let session_id = envelope.session_id.clone();
             let gov_tx_id = format!("GTX-{}", uuid::Uuid::new_v4().simple());
 
-            match pipeline.inbound_context_with_identity(
-                &envelope, &gov_tx_id, department_id.as_deref(), agent_id.as_deref(),
-            ) {
+            let (context_result, receipt) =
+                pipeline.inbound_context_with_identity_and_evidence(
+                    &envelope,
+                    &gov_tx_id,
+                    department_id.as_deref(),
+                    agent_id.as_deref(),
+                );
+
+            match context_result {
                 Err(envelope_error) => json_response(400, json!({
                     "ok": false,
-                    "error": format!("envelope validation failed: {envelope_error}")
+                    "error": format!("envelope validation failed: {envelope_error}"),
+                    "evidence": evidence_receipt_json(&receipt)
                 })),
                 Ok(result) => match &result {
                     EnforcementResult::Approved(_) => {
@@ -459,7 +508,8 @@ fn handle(
                                 "context_hash": envelope.context_hash,
                                 "run_id": envelope.run_id,
                                 "provider_authorizable": true,
-                                "action_authorizable": true
+                                "action_authorizable": true,
+                                "evidence": evidence_receipt_json(&receipt)
                             })),
                             None => json_response(500, json!({
                                 "ok": false,
@@ -468,7 +518,8 @@ fn handle(
                                 "gov_tx_id": gov_tx_id,
                                 "provider_authorizable": false,
                                 "action_authorizable": false,
-                                "error": "final approval receipt missing"
+                                "error": "final approval receipt missing",
+                                "evidence": evidence_receipt_json(&receipt)
                             })),
                         }
                     }
@@ -483,6 +534,7 @@ fn handle(
                         value["gov_tx_id"] = json!(gov_tx_id);
                         value["provider_authorizable"] = json!(false);
                         value["action_authorizable"] = json!(false);
+                        value["evidence"] = evidence_receipt_json(&receipt);
                         json_response(200, value)
                     }
                 }
@@ -534,7 +586,10 @@ fn handle(
                     "error": error
                 })),
                 Ok(request) => {
-                    match pipeline.authorize_provider_execution(request) {
+                    let (authorization, receipt) =
+                        pipeline.authorize_provider_execution_with_evidence(request);
+
+                    match authorization {
                         Ok(token) => json_response(200, json!({
                             "ok": true,
                             "decision_id": token.haap_decision_id,
@@ -552,12 +607,14 @@ fn handle(
                             "context_hash": token.context_hash,
                             "policy_version": token.policy_version,
                             "expires_at": token.expires_at,
-                            "max_uses": token.max_uses
+                            "max_uses": token.max_uses,
+                            "evidence": evidence_receipt_json(&receipt)
                         })),
                         Err(error) => json_response(403, json!({
                             "ok": false,
                             "authorized": false,
-                            "error": format!("{:?}", error)
+                            "error": format!("{:?}", error),
+                            "evidence": evidence_receipt_json(&receipt)
                         })),
                     }
                 }
@@ -618,7 +675,8 @@ fn handle(
                         plane: "",
                     };
 
-                    let outcome = pipeline.consume_provider_capability(&binding);
+                    let (outcome, receipt) =
+                        pipeline.consume_provider_capability_with_evidence(&binding);
                     let authorized = outcome.authorized();
                     let status = if authorized { 200 } else { 403 };
 
@@ -628,7 +686,8 @@ fn handle(
                         "outcome": outcome.as_audit_str(),
                         "capability_id": req.capability_id,
                         "gov_tx_id": req.gov_tx_id,
-                        "session_id": req.session_id
+                        "session_id": req.session_id,
+                        "evidence": evidence_receipt_json(&receipt)
                     }))
                 }
             }
@@ -686,7 +745,10 @@ fn handle(
                         governance_spine::action_semantics::derive_action_semantics_for_tool(
                             &diag_tool_name,
                         );
-                    match pipeline.authorize_action_execution(request) {
+                    let (authorization, receipt) =
+                        pipeline.authorize_action_execution_with_evidence(request);
+
+                    match authorization {
                     Ok(token) => json_response(200, json!({
                         "ok": true,
                         "decision_id": token.haap_decision_id,
@@ -709,7 +771,8 @@ fn handle(
                         "max_uses": token.max_uses,
                         "plane": token.action_plane.as_str(),
                         "normalized_action": token.normalized_action,
-                        "required_for_safe_completion": token.required_for_safe_completion
+                        "required_for_safe_completion": token.required_for_safe_completion,
+                        "evidence": evidence_receipt_json(&receipt)
                     })),
                     Err(error @ (
                         governance_spine::pipeline::ActionAuthorizationError::MalformedContextHash
@@ -718,6 +781,7 @@ fn handle(
                         "ok": false,
                         "authorized": false,
                         "error": format!("{:?}", error),
+                        "evidence": evidence_receipt_json(&receipt),
                         "diagnostics": {
                             "decision_type": "structural_validation_failed",
                             "plane": diag_semantics.plane.as_str(),
@@ -742,6 +806,7 @@ fn handle(
                             "ok": false,
                             "authorized": false,
                             "error": format!("{:?}", error),
+                            "evidence": evidence_receipt_json(&receipt),
                             "diagnostics": {
                                 "decision_type": "action_authorization_denied",
                                 "plane": diag_semantics.plane.as_str(),
@@ -820,7 +885,8 @@ fn handle(
                         plane: presented_semantics.plane.as_str(),
                     };
 
-                    let outcome = pipeline.consume_provider_capability(&binding);
+                    let (outcome, receipt) =
+                        pipeline.consume_provider_capability_with_evidence(&binding);
                     let authorized = outcome.authorized();
                     let status = if authorized { 200 } else { 403 };
 
@@ -831,6 +897,7 @@ fn handle(
                         "capability_id": req.capability_id,
                         "gov_tx_id": req.gov_tx_id,
                         "session_id": req.session_id,
+                        "evidence": evidence_receipt_json(&receipt),
                         // Bounded, non-secret diagnostics — never labeled as
                         // "content review" (that is Boundary E / outbound
                         // gate territory, a completely separate check). See
@@ -947,6 +1014,7 @@ fn handle(
             let entries = pipeline.evidence().snapshot();
             let items: Vec<Value> = entries.iter().rev().take(50).map(|e| json!({
                 "schema_version": e.schema_version.as_str(),
+                "epoch_id": e.epoch_id.as_str(),
                 "epoch_parent_hash": e.epoch_parent_hash.as_deref(),
                 "event_id": e.event_id.as_str(),
                 "sequence": e.sequence,
@@ -959,6 +1027,7 @@ fn handle(
                 "capability_id": e.payload.capability_id.as_deref(),
                 "context_hash": e.payload.context_hash.as_deref(),
                 "action_hash": e.payload.action_hash.as_deref(),
+                "outbound_hash": e.payload.outbound_hash.as_deref(),
                 "tool_name": e.payload.tool_name.as_deref(),
                 "resource_kind": e.payload.resource_kind.as_deref(),
                 "resource_locator_hash": e.payload.resource_locator_hash.as_deref(),

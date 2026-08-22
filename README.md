@@ -75,9 +75,9 @@ Evidence events are append-only, hash-linked, Ed25519-signed, and grouped into e
 
 The evidence payload excludes raw prompts, model outputs, tool arguments, credentials, and raw resource locators. Resource locators are represented by SHA-256 digests.
 
-`EvidenceGovernedPipeline` records context decisions, provider/action authorization decisions, and capability consumption or rejection while the underlying `GovernancePipeline` remains the sole authority. The HTTP server is wired through this decorator and exposes an authenticated `GET /evidence` export surface for bounded evidence records. External sinks implement the `EvidenceSink` contract; sink outages retain local evidence and queue ordered retry.
+`EvidenceGovernedPipeline` records context decisions, provider/action authorization decisions, capability consumption or rejection, and Boundary E outbound release or withholding while the underlying `GovernancePipeline` remains the sole authority. Governed HTTP decision endpoints return the exact `EvidenceAppendReceipt` created by that operation (`event_id`, `event_hash`, `sequence`, `epoch_id`, and `sink_status`), so adapters do not need to infer correlation from the latest evidence record. The authenticated `GET /evidence` endpoint remains a bounded retrieval and verification surface. Boundary E stores only the SHA-256 `outbound_hash` of the exact reviewed outbound payload, never the raw model output. External sinks implement the `EvidenceSink` contract; sink outages retain local evidence and queue ordered retry.
 
-The AWS WORM sink and governed OpenClaw mapping are separate deployment/integration steps. See `governance-spine/docs/EVIDENCE_PLANE.md`.
+The production AWS WORM archive and governed OpenClaw mapping remain separate deployment/integration steps. This repository does not currently claim that an external WORM archive has been provisioned or verified. See `governance-spine/docs/EVIDENCE_PLANE.md`.
 
 ## Verification
 
